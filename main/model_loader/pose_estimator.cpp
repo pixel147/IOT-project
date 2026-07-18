@@ -83,21 +83,21 @@ void pose_estimator_load_and_print(void)
     ESP_LOGI(TAG, "Model loaded, printing info:");
     s_model->print();
 
-    /* 打印输入 tensor */
-    auto &inputs = s_model->get_inputs();
-    for (auto &[name, tensor] : inputs) {
-        printf("  Input: %s, shape=[", name.c_str());
-        for (int d : tensor->shape) printf("%d ", d);
-        printf("]\n");
-    }
+    // /* 打印输入 tensor */
+    // auto &inputs = s_model->get_inputs();
+    // for (auto &[name, tensor] : inputs) {
+    //     printf("  Input: %s, shape=[", name.c_str());
+    //     for (int d : tensor->shape) printf("%d ", d);
+    //     printf("]\n");
+    // }
 
-    /* 打印输出 tensor */
-    auto &outputs = s_model->get_outputs();
-    for (auto &[name, tensor] : outputs) {
-        printf("  Output: %s, shape=[", name.c_str());
-        for (int d : tensor->shape) printf("%d ", d);
-        printf("]\n");
-    }
+    // /* 打印输出 tensor */
+    // auto &outputs = s_model->get_outputs();
+    // for (auto &[name, tensor] : outputs) {
+    //     printf("  Output: %s, shape=[", name.c_str());
+    //     for (int d : tensor->shape) printf("%d ", d);
+    //     printf("]\n");
+    // }
 
     ESP_LOGI(TAG, "Model loaded successfully");
 }
