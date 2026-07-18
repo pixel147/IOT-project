@@ -24,6 +24,25 @@ extern "C" {
  */
 void pose_estimator_load_and_print(void);
 
+/**
+ * @brief 对一帧 RGB565 图像运行姿态推理
+ *
+ * @param[in]  rgb565_buf    RGB565 图像数据
+ * @param[in]  w             图像宽度（像素）
+ * @param[in]  h             图像高度（像素）
+ * @param[in]  stride        每行字节数
+ * @param[out] joints_out    COCO 17 关键点，归一化坐标 [-1, 1]
+ * @param[out] confidences   各关键点置信度 [0~1]
+ * @param[out] score_out     整体检测分数
+ * @return ESP_OK  成功检测到人体
+ * @return ESP_FAIL 未检测到人体或模型未加载
+ */
+esp_err_t pose_estimator_run(const uint8_t *rgb565_buf,
+                              uint32_t w, uint32_t h, uint32_t stride,
+                              float joints_out[17][2],
+                              float confidences[17],
+                              float *score_out);
+
 #ifdef __cplusplus
 }
 #endif
