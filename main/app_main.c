@@ -1,4 +1,4 @@
-#include "bsp/esp32_p4_function_ev_board.h"
+﻿#include "bsp/esp32_p4_function_ev_board.h"
 #include "camera.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -16,7 +16,7 @@ static const char *TAG = "MAIN";
 /* ============================================================
  * 双缓冲 — 显示缓冲 (display lock 保护) + 推理缓冲 (信号量保护)
  * ============================================================ */
-#define MAX_FRAME_BYTES (1280 * 720 * 2)
+#define MAX_FRAME_BYTES (640 * 480 * 2)
 
 static uint8_t *s_fb_display = NULL;    /* LVGL 读取，仅在 display lock 内写入 */
 static uint8_t *s_fb_infer   = NULL;    /* 推理任务读取，回调中写入 */
@@ -92,7 +92,7 @@ static void pose_inference_task(void *arg)
                     dev[i] = (confs[i] < 0.3f) ? 2 : 0;
                 }
                 ui_update_skeleton(joints, UI_POSE_JOINT_COUNT, dev);
-                ui_update_suggestion("姿态检测正常");
+                ui_update_suggestion("姿态检测");
             } else {
                 ui_update_suggestion("未检测到人体");
             }
@@ -163,7 +163,7 @@ void app_main(void)
                             16384, NULL, 5, &s_infer_task_h, 1);
 
 #if CONFIG_IDF_TARGET_ESP32P4
-    esp_err_t cam_ret = cam_start(640, 480, 30, on_camera_frame);
+    esp_err_t cam_ret = cam_start(640, 480, 20, on_camera_frame);
     if (bsp_display_lock(-1)) {
         ui_set_system_status(cam_ret == ESP_OK
                              ? "摄像头：已连接"
