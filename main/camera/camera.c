@@ -278,6 +278,29 @@ esp_err_t cam_start(uint32_t width, uint32_t height, uint32_t fps, cam_frame_cb_
         ioctl(fd, VIDIOC_S_PARM, &sparm);
     }
 
+    /* 诊断：读取实际协商的分辨率和帧率 */
+    {
+        struct v4l2_format gfmt = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+        if (ioctl(fd, VIDIOC_G_FMT, &gfmt) == 0) {
+            ESP_LOGI(TAG, "Actual format: %c%c%c%c %ux%u stride=%u",
+                     (char)(gfmt.fmt.pix.pixelformat & 0xff),
+                     (char)((gfmt.fmt.pix.pixelformat >> 8) & 0xff),
+                     (char)((gfmt.fmt.pix.pixelformat >> 16) & 0xff),
+                     (char)((gfmt.fmt.pix.pixelformat >> 24) & 0xff),
+                     gfmt.fmt.pix.width, gfmt.fmt.pix.height,
+                     gfmt.fmt.pix.bytesperline);
+        }
+        struct v4l2_streamparm sparm_diag = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+        if (ioctl(fd, VIDIOC_G_PARM, &sparm_diag) == 0 &&
+            sparm_diag.parm.capture.timeperframe.denominator > 0) {
+            ESP_LOGI(TAG, "Actual framerate: %u/%u = %.1f fps",
+                     sparm_diag.parm.capture.timeperframe.denominator,
+                     sparm_diag.parm.capture.timeperframe.numerator,
+                     (float)sparm_diag.parm.capture.timeperframe.denominator
+                     / sparm_diag.parm.capture.timeperframe.numerator);
+        }
+    }
+
     s_cam.running = true;
 
 

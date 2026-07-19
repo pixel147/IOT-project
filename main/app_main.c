@@ -163,7 +163,7 @@ void app_main(void)
                             16384, NULL, 5, &s_infer_task_h, 1);
 
 #if CONFIG_IDF_TARGET_ESP32P4
-    esp_err_t cam_ret = cam_start(1280, 720, 30, on_camera_frame);
+    esp_err_t cam_ret = cam_start(640, 480, 30, on_camera_frame);
     if (bsp_display_lock(-1)) {
         ui_set_system_status(cam_ret == ESP_OK
                              ? "摄像头：已连接"
