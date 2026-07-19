@@ -27,7 +27,7 @@
 
 static const char *TAG = "POSE";
 
-#define MODEL_PATH "/sdcard/models/coco_pose_yolo11n_pose_s8_v2.espdl"
+#define MODEL_PATH "/sdcard/models/yolo26n-pose_esp32p4.espdl"
 
 /* ---------- 全局指针 ---------- */
 static dl::Model                        *s_model     = nullptr;
@@ -41,8 +41,8 @@ static dl::detect::yolo11posePostProcessor *s_postproc = nullptr;
  * enable_letterbox() 使图像在缩放至 640×640 时保持宽高比，
  * 缺失部分用 114 灰度填充（YOLO 训练时的默认 padding 值）。
  * ============================================================ */
-static constexpr float YOLO_MEAN[3] = {123.675f, 116.28f, 103.53f};
-static constexpr float YOLO_STD[3]  = {58.395f,  57.12f,  57.375f};
+static constexpr float YOLO_MEAN[3] = {0.0f, 0.0f, 0.0f};
+static constexpr float YOLO_STD[3]  = {255.0f, 255.0f, 255.0f};
 static constexpr uint8_t YOLO_LETTERBOX_BG = 114;
 
 /* YOLO11n-pose 的 3 个检测尺度 (P3/P4/P5) */
@@ -123,7 +123,8 @@ void pose_estimator_load_and_print(void)
         s_model,
         s_preproc,
         SCORE_THR, NMS_THR, TOP_K,
-        std::vector<dl::detect::anchor_point_stage_t>(YOLO_STAGES, YOLO_STAGES + 3)
+        std::vector<dl::detect::anchor_point_stage_t>(YOLO_STAGES, YOLO_STAGES + 3),
+        1  // reg_max=1 (YOLO26 使用直接距离值，无需 DFL 解码)
     );
     if (!s_postproc) {
         ESP_LOGE(TAG, "Failed to create yolo11posePostProcessor");
