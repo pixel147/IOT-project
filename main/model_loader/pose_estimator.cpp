@@ -133,6 +133,10 @@ void pose_estimator_load_and_print(void)
     ESP_LOGI(TAG, "Model + preprocessor + postprocessor ready");
 }
 
+
+
+
+
 /* ============================================================
  * 推理入口 — 被 app_main.c 的推理任务调用
  *

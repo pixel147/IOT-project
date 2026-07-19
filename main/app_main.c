@@ -26,7 +26,7 @@ static volatile bool s_frame_ready = false;
 static TaskHandle_t s_infer_task_h = NULL;
 
 /* ============================================================
- * 相机帧回调
+ * 相机帧回调 (Core 1)
  * ============================================================ */
 static void on_camera_frame(const uint8_t *buf, uint32_t len,
                             uint32_t w, uint32_t h, uint32_t stride,
@@ -53,7 +53,7 @@ static void on_camera_frame(const uint8_t *buf, uint32_t len,
 }
 
 /* ============================================================
- * 姿态推理任务 (Core 0)
+ * 姿态推理任务 (Core 1)
  * ============================================================ */
 static void pose_inference_task(void *arg)
 {
@@ -63,6 +63,7 @@ static void pose_inference_task(void *arg)
     float score;
 
     vTaskDelay(pdMS_TO_TICKS(1500));
+    // 等待模型加载完成 (1500ms)
 
     while (1) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
@@ -133,7 +134,7 @@ void app_main(void)
     }
 
 
-    
+    // 为帧分配PSRAM内存，确保对齐
     s_frame_buf = (uint8_t *)heap_caps_aligned_alloc(
         16, MAX_FRAME_BYTES,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
@@ -147,7 +148,7 @@ void app_main(void)
     }
 
     xTaskCreatePinnedToCore(pose_inference_task, "pose_infer",
-                            16384, NULL, 5, &s_infer_task_h, 0);
+                            16384, NULL, 5, &s_infer_task_h, 1);
 
 #if CONFIG_IDF_TARGET_ESP32P4
     esp_err_t cam_ret = cam_start(1280, 720, 30, on_camera_frame);
