@@ -14,11 +14,12 @@
 static const char *TAG = "MAIN";
 
 /* ============================================================
- * 帧缓冲 — 相机回调存帧，推理任务消费
+ * 双缓冲 — 显示缓冲 (display lock 保护) + 推理缓冲 (信号量保护)
  * ============================================================ */
 #define MAX_FRAME_BYTES (1280 * 720 * 2)
 
-static uint8_t *s_frame_buf = NULL;
+static uint8_t *s_fb_display = NULL;    /* LVGL 读取，仅在 display lock 内写入 */
+static uint8_t *s_fb_infer   = NULL;    /* 推理任务读取，回调中写入 */
 static uint32_t s_frame_w = 0;
 static uint32_t s_frame_h = 0;
 static uint32_t s_frame_stride = 0;
@@ -27,6 +28,9 @@ static TaskHandle_t s_infer_task_h = NULL;
 
 /* ============================================================
  * 相机帧回调 (Core 1)
+ *
+ * ① 显示缓冲 — 在 display lock 内拷贝，LVGL 读取时不被覆写
+ * ② 推理缓冲 — 通过 s_frame_ready 信号量保护，供推理任务消费
  * ============================================================ */
 static void on_camera_frame(const uint8_t *buf, uint32_t len,
                             uint32_t w, uint32_t h, uint32_t stride,
@@ -35,8 +39,18 @@ static void on_camera_frame(const uint8_t *buf, uint32_t len,
     (void)len;
     (void)fmt;
 
-    if (s_frame_buf && stride * h <= MAX_FRAME_BYTES) {
-        memcpy(s_frame_buf, buf, stride * h);
+    /* ① 显示缓冲：仅在 display lock 内写入，避免 LVGL 异步读取撕裂 */
+    if (bsp_display_lock(pdMS_TO_TICKS(100))) {
+        if (s_fb_display && stride * h <= MAX_FRAME_BYTES) {
+            memcpy(s_fb_display, buf, stride * h);
+            ui_update_camera_preview(s_fb_display, w, h, stride);
+        }
+        bsp_display_unlock();
+    }
+
+    /* ② 推理缓冲：写入后通知推理任务，不阻塞 */
+    if (s_fb_infer && stride * h <= MAX_FRAME_BYTES) {
+        memcpy(s_fb_infer, buf, stride * h);
         s_frame_w = w;
         s_frame_h = h;
         s_frame_stride = stride;
@@ -44,11 +58,6 @@ static void on_camera_frame(const uint8_t *buf, uint32_t len,
         if (s_infer_task_h) {
             xTaskNotifyGive(s_infer_task_h);
         }
-    }
-
-    if (bsp_display_lock(0)) {
-        ui_update_camera_preview(buf, w, h, stride);
-        bsp_display_unlock();
     }
 }
 
@@ -72,11 +81,11 @@ static void pose_inference_task(void *arg)
         s_frame_ready = false;
 
         esp_err_t ret = pose_estimator_run(
-            s_frame_buf,
+            s_fb_infer,
             s_frame_w, s_frame_h, s_frame_stride,
             joints, confs, &score);
 
-        if (bsp_display_lock(20)) {
+        if (bsp_display_lock(pdMS_TO_TICKS(500))) {
             if (ret == ESP_OK) {
                 uint8_t dev[UI_POSE_JOINT_COUNT];
                 for (int i = 0; i < UI_POSE_JOINT_COUNT; i++) {
@@ -134,12 +143,15 @@ void app_main(void)
     }
 
 
-    // 为帧分配PSRAM内存，确保对齐
-    s_frame_buf = (uint8_t *)heap_caps_aligned_alloc(
+    // 为帧分配PSRAM内存，双缓冲：显示 + 推理
+    s_fb_display = (uint8_t *)heap_caps_aligned_alloc(
         16, MAX_FRAME_BYTES,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
-    if (!s_frame_buf) {
-        ESP_LOGE(TAG, "Failed to allocate PSRAM frame buffer");
+    s_fb_infer = (uint8_t *)heap_caps_aligned_alloc(
+        16, MAX_FRAME_BYTES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+    if (!s_fb_display || !s_fb_infer) {
+        ESP_LOGE(TAG, "Failed to allocate PSRAM frame buffer(s)");
     }
 
     if (bsp_display_lock(-1)) {
