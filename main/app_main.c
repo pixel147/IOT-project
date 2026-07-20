@@ -1,4 +1,4 @@
-#include "bsp/esp32_p4_function_ev_board.h"
+﻿#include "bsp/esp32_p4_function_ev_board.h"
 #include "camera.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -90,7 +90,7 @@ void app_main(void)
     lvgl_port_lock(-1);
     ui_init();
     ui_set_system_status("摄像头：启动中");
-    ui_update_suggestion("MIPI-CSI + callback direct canvas");
+    ui_update_suggestion("提示：等待姿态模型接入。");
     lv_timer_create(fps_timer_cb, 1000, NULL);
     lvgl_port_unlock();
 
