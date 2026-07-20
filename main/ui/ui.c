@@ -25,11 +25,6 @@ static lv_timer_t *message_timer;
 static uint32_t preview_width = 4;
 static uint32_t preview_height = 3;
 
-static lv_image_dsc_t camera_frame = {
-    .header.magic = LV_IMAGE_HEADER_MAGIC,
-    .header.cf = LV_COLOR_FORMAT_RGB565,
-};
-
 static lv_point_precise_t skeleton_lines[UI_JOINT_PAIR_COUNT][2];
 
 static const uint8_t joint_pairs[UI_JOINT_PAIR_COUNT][2] = {
@@ -198,15 +193,14 @@ void ui_create_main_screen(void)
     lv_obj_set_size(camera_container, LV_PCT(100), LV_PCT(100));
     lv_obj_center(camera_container);
     lv_obj_set_style_bg_color(camera_container, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(camera_container, LV_OPA_TRANSP, 0);  /* 背景透明，相机像素由 app 直接写 draw buffer */
     lv_obj_set_style_border_width(camera_container, 0, 0);
     lv_obj_set_style_pad_all(camera_container, 0, 0);
     lv_obj_set_scrollbar_mode(camera_container, LV_SCROLLBAR_MODE_OFF);
 
-    camera_img = lv_image_create(camera_container);
+    /* 使用 lv_canvas 而非 lv_image — 直接当位图显示，跳过图像解码器 */
+    camera_img = lv_canvas_create(camera_container);
     lv_obj_set_size(camera_img, LV_PCT(100), LV_PCT(100));
-    lv_image_set_src(camera_img, NULL);
-    lv_image_set_inner_align(camera_img, LV_IMAGE_ALIGN_CONTAIN);
-    lv_obj_set_style_image_opa(camera_img, LV_OPA_TRANSP, 0);
     lv_obj_center(camera_img);
 
     skeleton_container = lv_obj_create(pose_stage);
@@ -391,14 +385,9 @@ void ui_update_camera_preview(const uint8_t *buf, uint32_t w, uint32_t h,
 
     preview_width = w;
     preview_height = h;
-    camera_frame.data = buf;
-    camera_frame.data_size = stride * h;
-    camera_frame.header.w = w;
-    camera_frame.header.h = h;
-    camera_frame.header.cf = LV_COLOR_FORMAT_RGB565;
-    camera_frame.header.stride = stride;
-    lv_image_set_src(camera_img, &camera_frame);
-    lv_obj_set_style_image_opa(camera_img, LV_OPA_COVER, 0);
+    /* lv_canvas_set_buf: 直接指向相机缓冲，零拷贝，不解码 */
+    lv_canvas_set_buffer(camera_img, (void *)buf, (lv_coord_t)w, (lv_coord_t)h,
+                         LV_COLOR_FORMAT_RGB565);
     lv_obj_invalidate(camera_img);
 }
 
@@ -407,6 +396,18 @@ void ui_update_fps(float fps)
     if (fps_label) {
         lv_label_set_text_fmt(fps_label, "%.0f FPS", (double)fps);
     }
+}
+
+void ui_get_preview_rect(int *x, int *y, int *w, int *h)
+{
+    if (!camera_img) {
+        *x = 0; *y = 0; *w = 320; *h = 240;
+        return;
+    }
+    *x = lv_obj_get_x(camera_img);
+    *y = lv_obj_get_y(camera_img);
+    *w = lv_obj_get_width(camera_img);
+    *h = lv_obj_get_height(camera_img);
 }
 
 void ui_set_system_status(const char *status)

@@ -43,6 +43,7 @@ void ui_update_suggestion(const char *text);
 void ui_set_mode_text(const char *mode);
 void ui_update_camera_preview(const uint8_t *buf, uint32_t w, uint32_t h,
                               uint32_t stride);
+void ui_get_preview_rect(int *x, int *y, int *w, int *h);
 void ui_update_fps(float fps);
 void ui_set_system_status(const char *status);
 void ui_present_pose_frame(const ui_pose_frame_t *frame);

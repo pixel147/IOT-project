@@ -1,13 +1,15 @@
-#include "cam.h"
+﻿#include "cam.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_cache.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "usb/usb_host.h"
 #include "usb/uvc_host.h"
+#include "driver/jpeg_decode.h"
 #include <linux/videodev2.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +18,12 @@ static const char *TAG = "UVC_CAM";
 
 #define UVC_FRAME_BUFFER_COUNT  3
 #define UVC_FRAME_QUEUE_LENGTH  UVC_FRAME_BUFFER_COUNT
-#define UVC_TASK_PRIORITY       8
+#define UVC_TASK_PRIORITY       10
+#define UVC_FRAME_SIZE          (200 * 1024)  /* MJPG 640×480 ~50KB, 200KB 留足余量 */
+#define OUT_TARGET_W            640
+#define OUT_TARGET_H            480
+#define RGB565_BUF_SIZE         (OUT_TARGET_W * OUT_TARGET_H * 2)
+#define JPEG_WORK_BUF_SIZE      (32 * 1024)
 
 static struct {
     bool running;
@@ -39,6 +46,13 @@ static struct {
     uint8_t selected_dev_addr;
     uint8_t selected_stream_index;
     bool format_found;
+    bool format_is_mjpg;
+    jpeg_decoder_handle_t jpeg_dec;
+    uint8_t *mjpg_frame_buf[2];     /* 乒乓：回调写一个，解码任务读另一个 */
+    uint32_t mjpg_frame_len[2];
+    volatile int mjpg_write_idx;    /* 回调写入目标 */
+    uint8_t *jpeg_out_buf;
+    uint32_t jpeg_out_size;
 } s_cam;
 
 static uint8_t clamp_to_u8(int value)
@@ -87,7 +101,32 @@ static bool select_yuy2_format(const uvc_host_frame_info_t *frame_info,
     return found;
 }
 
-/* UVC 设备连接后读取描述符，并选择当前相机真实支持的 YUY2 格式。 */
+/* 从相机描述符中选择 MJPG 格式，FPS 不超过 30。 */
+static bool select_mjpeg_format(const uvc_host_frame_info_t *frame_info,
+                                size_t frame_info_count,
+                                uint32_t max_width, uint32_t max_height,
+                                uvc_host_stream_format_t *selected_format)
+{
+    uint32_t best_pixels = 0;
+    bool found = false;
+    for (size_t i = 0; i < frame_info_count; i++) {
+        const uvc_host_frame_info_t *c = &frame_info[i];
+        if (c->format != UVC_VS_FORMAT_MJPEG ||
+            c->h_res > max_width || c->v_res > max_height ||
+            c->default_interval == 0 ||
+            c->h_res * c->v_res < best_pixels) continue;
+        selected_format->h_res = c->h_res;
+        selected_format->v_res = c->v_res;
+        float fps = frame_interval_to_fps(c->default_interval);
+        selected_format->fps = fps > 30.0f ? 30.0f : fps;
+        selected_format->format = UVC_VS_FORMAT_MJPEG;
+        best_pixels = c->h_res * c->v_res;
+        found = true;
+    }
+    return found;
+}
+
+/* UVC 设备连接后读取描述符，优先 MJPG，其次 YUY2。 */
 static void uvc_driver_event_callback(const uvc_host_driver_event_data_t *event,
                                       void *user_ctx)
 {
@@ -119,9 +158,16 @@ static void uvc_driver_event_callback(const uvc_host_driver_event_data_t *event,
                      frame_interval_to_fps(frame_info[i].default_interval));
         }
 
-        s_cam.format_found = select_yuy2_format(frame_info, frame_info_count,
-                                                 s_cam.width, s_cam.height,
-                                                 &s_cam.selected_format);
+        s_cam.format_found = select_mjpeg_format(frame_info, frame_info_count,
+                                                  s_cam.width, s_cam.height,
+                                                  &s_cam.selected_format);
+        s_cam.format_is_mjpg = true;
+        if (!s_cam.format_found) {
+            s_cam.format_found = select_yuy2_format(frame_info, frame_info_count,
+                                                     s_cam.width, s_cam.height,
+                                                     &s_cam.selected_format);
+            s_cam.format_is_mjpg = false;
+        }
         if (s_cam.format_found) {
             s_cam.selected_dev_addr = event->device_connected.dev_addr;
             s_cam.selected_stream_index = event->device_connected.uvc_stream_index;
@@ -179,12 +225,21 @@ static bool uvc_frame_callback(const uvc_host_frame_t *frame, void *user_ctx)
 {
     (void)user_ctx;
 
+    if (s_cam.format_is_mjpg) {
+        int w = s_cam.mjpg_write_idx;
+        if (s_cam.mjpg_frame_buf[w] && frame->data_len <= UVC_FRAME_SIZE) {
+            memcpy(s_cam.mjpg_frame_buf[w], frame->data, frame->data_len);
+            s_cam.mjpg_frame_len[w] = frame->data_len;
+            s_cam.frame_ready = true;
+        }
+        return true;
+    }
+
     if (!s_cam.running || !s_cam.frame_queue) {
         return true;
     }
 
     if (xQueueSendToBack(s_cam.frame_queue, &frame, 0) != pdPASS) {
-        ESP_LOGW(TAG, "帧处理队列已满，丢弃当前帧");
         return true;
     }
 
@@ -230,50 +285,134 @@ static void uvc_frame_processing_task(void *arg)
 {
     (void)arg;
 
-    while (true) {
-        const uvc_host_frame_t *frame = NULL;
-        if (xQueueReceive(s_cam.frame_queue, &frame, portMAX_DELAY) != pdPASS) {
-            continue;
+    /* MJPG: 初始化 ESP-IDF JPEG 解码器（替代 esp_new_jpeg，兼容更多相机） */
+    if (s_cam.format_is_mjpg) {
+        jpeg_decode_engine_cfg_t eng_cfg = { .timeout_ms = 100 };
+        if (jpeg_new_decoder_engine(&eng_cfg, &s_cam.jpeg_dec) != ESP_OK) {
+            ESP_LOGE(TAG, "IDF JPEG 解码器创建失败");
+            s_cam.jpeg_dec = NULL;
         }
+    }
 
-        const bool valid_frame = s_cam.running && frame &&
-                                 frame->vs_format.format == UVC_VS_FORMAT_YUY2 &&
-                                 frame->vs_format.h_res == s_cam.width &&
-                                 frame->vs_format.v_res == s_cam.height &&
-                                 frame->data_len >= s_cam.rgb565_buffer_len &&
-                                 s_cam.rgb565_buffer;
+    while (true) {
+        /* ---- MJPG 路径 ---- */
+        if (s_cam.format_is_mjpg) {
+            if (!s_cam.frame_ready) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+            s_cam.frame_ready = false;
 
-        if (valid_frame) {
             const int64_t now = esp_timer_get_time();
             if (s_cam.last_frame_time > 0) {
-                const float interval = (float)(now - s_cam.last_frame_time) / 1000000.0f;
-                if (interval > 0.0f) {
-                    const float instant_fps = 1.0f / interval;
+                float dt = (float)(now - s_cam.last_frame_time) / 1000000.0f;
+                if (dt > 0) {
+                    float ifps = 1.0f / dt;
                     s_cam.fps_calc = s_cam.fps_calc == 0.0f
-                                  ? instant_fps
-                                  : 0.9f * s_cam.fps_calc + 0.1f * instant_fps;
+                                   ? ifps : 0.9f * s_cam.fps_calc + 0.1f * ifps;
                 }
             }
             s_cam.last_frame_time = now;
 
-            yuy2_to_rgb565(frame->data, (uint16_t *)s_cam.rgb565_buffer,
-                            s_cam.width, s_cam.height);
-            s_cam.frame_ready = true;
+            int r = s_cam.mjpg_write_idx;  /* 当前写完的缓冲 */
+            s_cam.mjpg_write_idx ^= 1;       /* 交换：回调写另一块 */
+            if (s_cam.jpeg_dec && s_cam.mjpg_frame_len[r] > 0) {
+                uint32_t len = s_cam.mjpg_frame_len[r];
+                uint8_t  *src = s_cam.mjpg_frame_buf[r];
 
-            if (s_cam.callback) {
-                s_cam.callback(s_cam.rgb565_buffer, s_cam.rgb565_buffer_len,
-                               s_cam.width, s_cam.height, s_cam.stride,
-                               V4L2_PIX_FMT_RGB565);
+                /* 获取 JPEG 尺寸 */
+                jpeg_decode_picture_info_t pic_info;
+                /* ① 解码前：写回输入数据到 PSRAM */
+                size_t align_in = (len + 63) & ~63;
+                esp_cache_msync(src, align_in,
+                                ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
+
+                if (jpeg_decoder_get_info(src, len, &pic_info) != ESP_OK) {
+                    ESP_LOGW(TAG, "JPEG get_info err (len=%u)", len);
+                    continue;
+                }
+
+                /* 按实际分辨率分配输出缓冲 */
+                uint32_t need = pic_info.width * pic_info.height * 2;
+                if (need > s_cam.jpeg_out_size || !s_cam.jpeg_out_buf) {
+                    free(s_cam.jpeg_out_buf);
+                    s_cam.jpeg_out_buf = heap_caps_aligned_alloc(64, need,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+                    if (!s_cam.jpeg_out_buf) { s_cam.jpeg_out_size = 0; continue; }
+                    s_cam.jpeg_out_size = need;
+                }
+
+                /* ② 解码前：失效输出缓冲缓存（让 DMA 直接写 PSRAM） */
+                esp_cache_msync(s_cam.jpeg_out_buf, (need + 63) & ~63,
+                                ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+
+                /* IDF JPEG 解码 */
+                jpeg_decode_cfg_t dec_cfg = {
+                    .output_format = JPEG_DECODE_OUT_FORMAT_RGB565,
+                    .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,
+                };
+                uint32_t out_len = s_cam.jpeg_out_size;
+                esp_err_t ret = jpeg_decoder_process(s_cam.jpeg_dec, &dec_cfg,
+                                        src, len,
+                                        s_cam.jpeg_out_buf, s_cam.jpeg_out_size, &out_len);
+                if (ret == ESP_OK && s_cam.callback && out_len > 0) {
+                    /* ③ 解码后：刷新 CPU 缓存读 PSRAM */
+                    esp_cache_msync(s_cam.jpeg_out_buf, (out_len + 63) & ~63,
+                                    ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+
+                    int dw = OUT_TARGET_W, dh = OUT_TARGET_H;
+                    int sx = (int)pic_info.width / dw;
+                    int sy = (int)pic_info.height / dh;
+                    uint16_t *px_src = (uint16_t *)s_cam.jpeg_out_buf;
+                    uint16_t *dst   = (uint16_t *)s_cam.rgb565_buffer;
+                    for (int y = 0; y < dh; y++) {
+                        uint16_t *srow = px_src + (y * sy) * (int)pic_info.width;
+                        uint16_t *drow = dst + y * dw;
+                        for (int x = 0; x < dw; x++)
+                            drow[x] = srow[x * sx];
+                    }
+                    esp_cache_msync(s_cam.rgb565_buffer, (dw * dh * 2 + 63) & ~63,
+                                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
+                    s_cam.callback(s_cam.rgb565_buffer, (uint32_t)(dw * dh * 2),
+                                   (uint32_t)dw, (uint32_t)dh,
+                                   (uint32_t)(dw * 2), V4L2_PIX_FMT_RGB565);
+                } else if (ret != ESP_OK) {
+                    ESP_LOGW(TAG, "JPEG err 0x%x %ux%u (len=%u)",
+                             ret, pic_info.width, pic_info.height, len);
+                }
             }
-        } else if (frame) {
-            ESP_LOGW(TAG, "收到不匹配的 UVC 帧: format=%d, %ux%u, len=%u",
-                     frame->vs_format.format, frame->vs_format.h_res,
-                     frame->vs_format.v_res, (unsigned int)frame->data_len);
+            continue;
         }
 
-        if (s_cam.stream) {
-            uvc_host_frame_return(s_cam.stream, (uvc_host_frame_t *)frame);
+        /* ---- YUY2 路径 ---- */
+        const uvc_host_frame_t *frame = NULL;
+        if (xQueueReceive(s_cam.frame_queue, &frame, portMAX_DELAY) != pdPASS)
+            continue;
+
+        if (s_cam.running && frame &&
+            frame->vs_format.format == UVC_VS_FORMAT_YUY2 &&
+            s_cam.rgb565_buffer) {
+            const int64_t now = esp_timer_get_time();
+            if (s_cam.last_frame_time > 0) {
+                float dt = (float)(now - s_cam.last_frame_time) / 1000000.0f;
+                if (dt > 0) {
+                    float ifps = 1.0f / dt;
+                    s_cam.fps_calc = s_cam.fps_calc == 0.0f
+                                   ? ifps : 0.9f * s_cam.fps_calc + 0.1f * ifps;
+                }
+            }
+            s_cam.last_frame_time = now;
+            yuy2_to_rgb565(frame->data, (uint16_t *)s_cam.rgb565_buffer,
+                            frame->vs_format.h_res, frame->vs_format.v_res);
+            if (s_cam.callback) {
+                s_cam.callback(s_cam.rgb565_buffer,
+                               frame->vs_format.h_res * frame->vs_format.v_res * 2,
+                               frame->vs_format.h_res, frame->vs_format.v_res,
+                               frame->vs_format.h_res * 2, V4L2_PIX_FMT_RGB565);
+            }
         }
+        if (s_cam.stream)
+            uvc_host_frame_return(s_cam.stream, (uvc_host_frame_t *)frame);
     }
 }
 
@@ -361,16 +500,25 @@ esp_err_t cam_start(uint32_t width, uint32_t height, uint32_t fps, cam_frame_cb_
     s_cam.height = s_cam.selected_format.v_res;
     s_cam.stride = s_cam.width * 2;
 
-    ret = allocate_rgb565_buffer(s_cam.stride * s_cam.height);
-    if (ret != ESP_OK) {
-        return ret;
+    /* MJPG: 按解码后 RGB565 尺寸分配；YUY2: 按原始尺寸 */
+    ret = allocate_rgb565_buffer(s_cam.format_is_mjpg
+                                  ? RGB565_BUF_SIZE
+                                  : s_cam.stride * s_cam.height);
+    if (ret != ESP_OK) return ret;
+
+    if (s_cam.format_is_mjpg) {
+        for (int i = 0; i < 2; i++) {
+            s_cam.mjpg_frame_buf[i] = heap_caps_aligned_alloc(64, UVC_FRAME_SIZE,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+        }
     }
 
     s_cam.frame_queue = xQueueCreate(UVC_FRAME_QUEUE_LENGTH, sizeof(uvc_host_frame_t *));
-    if (!s_cam.frame_queue) {
-        ESP_LOGE(TAG, "UVC 帧队列创建失败");
-        return ESP_ERR_NO_MEM;
-    }
+    if (!s_cam.frame_queue) return ESP_ERR_NO_MEM;
+
+    uint32_t max_frame_sz = s_cam.format_is_mjpg
+                            ? UVC_FRAME_SIZE
+                            : s_cam.stride * s_cam.height;
 
     const uvc_host_stream_config_t stream_config = {
         .event_cb = uvc_stream_event_callback,
@@ -384,14 +532,15 @@ esp_err_t cam_start(uint32_t width, uint32_t height, uint32_t fps, cam_frame_cb_
         .vs_format = s_cam.selected_format,
         .advanced = {
             .number_of_frame_buffers = UVC_FRAME_BUFFER_COUNT,
-            .frame_size = s_cam.stride * s_cam.height,
+            .frame_size = max_frame_sz,
             .frame_heap_caps = MALLOC_CAP_SPIRAM,
-            .number_of_urbs = 3,
-            .urb_size = 10 * 1024,
+            .number_of_urbs = 4,
+            .urb_size = 16 * 1024,
         },
     };
 
-    ESP_LOGI(TAG, "打开 UVC 视频流: YUY2 %ux%u @ %.1f fps",
+    ESP_LOGI(TAG, "打开 UVC 视频流: %s %ux%u @ %.1f fps",
+             s_cam.format_is_mjpg ? "MJPG" : "YUY2",
              s_cam.width, s_cam.height, s_cam.selected_format.fps);
     ret = uvc_host_stream_open(&stream_config, pdMS_TO_TICKS(5000), &s_cam.stream);
     if (ret != ESP_OK) {
@@ -399,7 +548,7 @@ esp_err_t cam_start(uint32_t width, uint32_t height, uint32_t fps, cam_frame_cb_
         return ret;
     }
 
-    if (xTaskCreatePinnedToCore(uvc_frame_processing_task, "uvc_process", 6144, NULL,
+    if (xTaskCreatePinnedToCore(uvc_frame_processing_task, "uvc_process", 8192, NULL,
                                 UVC_TASK_PRIORITY, &s_cam.processing_task,
                                 tskNO_AFFINITY) != pdPASS) {
         ESP_LOGE(TAG, "UVC 帧处理任务创建失败");
@@ -427,6 +576,18 @@ void cam_stop(void)
         uvc_host_stream_stop(s_cam.stream);
         uvc_host_stream_close(s_cam.stream);
         s_cam.stream = NULL;
+    }
+
+    if (s_cam.jpeg_dec) {
+        jpeg_del_decoder_engine(s_cam.jpeg_dec);
+        s_cam.jpeg_dec = NULL;
+    }
+    free(s_cam.jpeg_out_buf);
+    s_cam.jpeg_out_buf = NULL;
+    s_cam.jpeg_out_size = 0;
+    for (int i = 0; i < 2; i++) {
+        free(s_cam.mjpg_frame_buf[i]);
+        s_cam.mjpg_frame_buf[i] = NULL;
     }
 
     s_cam.frame_ready = false;
