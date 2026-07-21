@@ -27,7 +27,7 @@
 
 static const char *TAG = "POSE";
 
-#define MODEL_PATH "/sdcard/models/yolo26n-pose_esp32p4.espdl"
+#define MODEL_PATH "/sdcard/models/coco_pose_yolo11n_pose_s8_v2.espdl"
 
 /* ---------- 全局指针 ---------- */
 static dl::Model                        *s_model     = nullptr;
@@ -96,8 +96,7 @@ void pose_estimator_load_and_print(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Model loaded, printing info:");
-    s_model->print();
+    ESP_LOGI(TAG, "Model loaded successfully");
 
     /* -------------------------------------------------------
      * 创建 ImagePreprocessor
@@ -119,13 +118,16 @@ void pose_estimator_load_and_print(void)
      * 创建 yolo11posePostProcessor
      *   负责: 解析 3 尺度输出 → NMS → 坐标逆映射回原图
      * ------------------------------------------------------- */
-    s_postproc = new (std::nothrow) dl::detect::yolo11posePostProcessor(
-        s_model,
-        s_preproc,
-        SCORE_THR, NMS_THR, TOP_K,
-        std::vector<dl::detect::anchor_point_stage_t>(YOLO_STAGES, YOLO_STAGES + 3),
-        1  // reg_max=1 (YOLO26 使用直接距离值，无需 DFL 解码)
-    );
+    {
+        std::vector<dl::detect::anchor_point_stage_t> stages(
+            YOLO_STAGES, YOLO_STAGES + 3);
+        s_postproc = new (std::nothrow) dl::detect::yolo11posePostProcessor(
+            s_model,
+            s_preproc,
+            SCORE_THR, NMS_THR, TOP_K,
+            stages
+        );
+    }
     if (!s_postproc) {
         ESP_LOGE(TAG, "Failed to create yolo11posePostProcessor");
         return;

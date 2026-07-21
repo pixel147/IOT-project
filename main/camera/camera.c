@@ -66,6 +66,40 @@ static uint8_t clamp_to_u8(int value)
     return (uint8_t)value;
 }
 
+/** 快速检查 RGB565 帧是否明显异常（全黑/全纯色）。仅捕获最低限度的解码失败情况。 */
+static bool is_rgb565_frame_plausible(const uint16_t *buf, int w, int h)
+{
+    int sum_r = 0, sum_g = 0, sum_b = 0, samples = 0;
+    int step = 128;
+    if (step < 1) step = 1;
+
+    for (int y = 0; y < h; y += step) {
+        for (int x = 0; x < w; x += step) {
+            uint16_t px = buf[y * w + x];
+            sum_r += (px >> 11) & 0x1F;
+            sum_g += (px >> 5)  & 0x3F;
+            sum_b +=  px        & 0x1F;
+            samples++;
+        }
+    }
+    if (samples == 0) return false;
+
+    int avg_r = sum_r / samples;
+    int avg_g = sum_g / samples;
+    int avg_b = sum_b / samples;
+
+    /* 全黑 */
+    if (avg_r == 0 && avg_g == 0 && avg_b == 0) return false;
+
+    /* 只有一个通道有值且远大于其他（解码出纯色垃圾） */
+    if ((avg_r > 25 && avg_g < 3 && avg_b < 3) ||
+        (avg_g > 50 && avg_r < 3 && avg_b < 3) ||
+        (avg_b > 25 && avg_r < 3 && avg_g < 3))
+        return false;
+
+    return true;
+}
+
 static float frame_interval_to_fps(uint32_t interval)
 {
     return interval == 0 ? 0.0f : 10000000.0f / (float)interval;
@@ -373,6 +407,13 @@ static void uvc_frame_processing_task(void *arg)
                     }
                     esp_cache_msync(s_cam.rgb565_buffer, (dw * dh * 2 + 63) & ~63,
                                     ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
+
+                    /* 快速检查解码结果是否合理（过滤 ISOC 错误导致的垃圾帧） */
+                    if (!is_rgb565_frame_plausible((const uint16_t *)s_cam.rgb565_buffer, dw, dh)) {
+                        ESP_LOGW(TAG, "帧无效（解码结果过均匀），跳过显示");
+                        continue;
+                    }
+
                     s_cam.callback(s_cam.rgb565_buffer, (uint32_t)(dw * dh * 2),
                                    (uint32_t)dw, (uint32_t)dh,
                                    (uint32_t)(dw * 2), V4L2_PIX_FMT_RGB565);
