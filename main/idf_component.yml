@@ -1,6 +1,4 @@
 dependencies:
   esp32_p4_function_ev_board:
     version: ^5.2.3
-  espressif/esp-tflite-micro: ^1.3.3
-  espressif/esp-nn: ^1.2.2
-description: Smart Vision Pose Assessment — MoveNet via TFLite Micro
+description: Emotion + LLM Chat Terminal on ESP32-P4
