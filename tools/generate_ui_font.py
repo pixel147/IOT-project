@@ -12,9 +12,9 @@ FONT_SIZE = 22
 TEXT = (
     "俯卧撑观察引体向上仰卧起坐摄像头启动中实时数据评分左右膝肘等待姿态模型接入开始停止提示已连接失败"
     "当前仅显示模拟骨架人体位置请调整视频预览关节角度建议未检测到深蹲平板支撑站立前屈训练完成"
-    "，。：；（）-+/%°"
+    "，。：；（）-+/%"
 )
-ASCII = " 0123456789.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+ASCII = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 
 def c_array(values, per_line=16):

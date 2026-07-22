@@ -62,7 +62,7 @@ static void norm_to_pixel(float nx, float ny, float *px, float *py)
     const float image_y = (content_h - image_h) * 0.5f;
 
     *px = image_x + (nx + 1.0f) * 0.5f * image_w;
-    *py = image_y + (ny + 1.0f) * 0.5f * image_h;
+    *py = image_y + (1.0f - ny) * 0.5f * image_h;
 }
 
 static void reset_measurements(void)
@@ -202,7 +202,6 @@ void ui_create_main_screen(void)
     camera_img = lv_canvas_create(camera_container);
     lv_obj_set_size(camera_img, LV_PCT(100), LV_PCT(100));
     lv_obj_center(camera_img);
-    /* 缓冲由 app_main 分配并设置（不在此处设置，canvas 暂时无缓冲） */
 
     skeleton_container = lv_obj_create(pose_stage);
     lv_obj_set_size(skeleton_container, LV_PCT(100), LV_PCT(100));
@@ -379,13 +378,6 @@ void ui_set_mode_text(const char *mode)
     }
 }
 
-void ui_set_camera_buffer(const uint8_t *buf, uint32_t w, uint32_t h)
-{
-    if (!camera_img || !buf) return;
-    lv_canvas_set_buffer(camera_img, (void *)buf, (lv_coord_t)w, (lv_coord_t)h,
-                         LV_COLOR_FORMAT_RGB565);
-}
-
 void ui_update_camera_preview(const uint8_t *buf, uint32_t w, uint32_t h,
                               uint32_t stride)
 {
@@ -396,16 +388,6 @@ void ui_update_camera_preview(const uint8_t *buf, uint32_t w, uint32_t h,
     /* lv_canvas_set_buf: 直接指向相机缓冲，零拷贝，不解码 */
     lv_canvas_set_buffer(camera_img, (void *)buf, (lv_coord_t)w, (lv_coord_t)h,
                          LV_COLOR_FORMAT_RGB565);
-    lv_obj_invalidate(camera_img);
-}
-
-/** 更新相机显示缓冲内容（canvas 指针固定于显示缓冲，仅刷新内容）。 */
-void ui_update_camera_display(const uint8_t *buf, uint32_t w, uint32_t h,
-                              uint32_t stride)
-{
-    if (!camera_img || !buf || w == 0 || h == 0 || stride < w * 2) return;
-    preview_width = w;
-    preview_height = h;
     lv_obj_invalidate(camera_img);
 }
 

@@ -41,10 +41,7 @@ void ui_update_angles(float left_knee, float right_knee, float left_elbow,
 void ui_update_score(uint8_t score);
 void ui_update_suggestion(const char *text);
 void ui_set_mode_text(const char *mode);
-void ui_set_camera_buffer(const uint8_t *buf, uint32_t w, uint32_t h);
 void ui_update_camera_preview(const uint8_t *buf, uint32_t w, uint32_t h,
-                              uint32_t stride);
-void ui_update_camera_display(const uint8_t *buf, uint32_t w, uint32_t h,
                               uint32_t stride);
 void ui_get_preview_rect(int *x, int *y, int *w, int *h);
 void ui_update_fps(float fps);
