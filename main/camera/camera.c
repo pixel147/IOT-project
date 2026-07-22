@@ -303,7 +303,7 @@ esp_err_t cam_start(uint32_t width, uint32_t height, uint32_t fps, cam_frame_cb_
     s_cam.running = true;
 
     /* 创建相机捕获任务（Core 1） */
-    xTaskCreatePinnedToCore(cam_capture_task, "cam_capture", 4096, NULL, 5, &s_cam.task, 1);
+    xTaskCreatePinnedToCore(cam_capture_task, "cam_capture", 16384, NULL, 5, &s_cam.task, 1);
 
     ESP_LOGI(TAG, "Camera started: %ux%u @ %u fps", s_cam.width, s_cam.height, fps);
     return ESP_OK;

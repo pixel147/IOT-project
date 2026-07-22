@@ -12,13 +12,13 @@
 #include "emotion_estimator.hpp"
 
 #include "dl_model_base.hpp"
-#include "fbs_model.hpp"
 #include "dl_tensor_base.hpp"
 
 #include "esp_log.h"
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <sys/stat.h>
 
 static const char *TAG = "EMOTION";
 
@@ -35,14 +35,20 @@ static dl::Model *s_emotion_model = nullptr;
 /* ---- 模型加载 ---- */
 void emotion_estimator_load(void)
 {
-    ESP_LOGI(TAG, "Loading EmotionCNN: %s", MODEL_PATH);
+    /* 先检查文件是否存在，避免构造函数崩溃 */
+    struct stat st;
+    if (stat(MODEL_PATH, &st) != 0) {
+        ESP_LOGW(TAG, "Model file not found: %s (skipping emotion)", MODEL_PATH);
+        return;
+    }
+    ESP_LOGI(TAG, "Loading EmotionCNN: %s (%ld bytes)", MODEL_PATH, (long)st.st_size);
 
+    /* 与 human_face_detect 相同的构造方式 */
     s_emotion_model = new (std::nothrow) dl::Model(
-        MODEL_PATH, fbs::MODEL_LOCATION_IN_SDCARD,
-        0, dl::MEMORY_MANAGER_GREEDY, nullptr, true);
+        MODEL_PATH, static_cast<fbs::model_location_type_t>(fbs::MODEL_LOCATION_IN_SDCARD));
 
     if (!s_emotion_model || !s_emotion_model->get_fbs_model()) {
-        ESP_LOGE(TAG, "Model load FAILED");
+        ESP_LOGW(TAG, "Model load FAILED (skipping emotion)");
         delete s_emotion_model;
         s_emotion_model = nullptr;
         return;
@@ -52,7 +58,7 @@ void emotion_estimator_load(void)
     s_emotion_model->print();
 
     /* 打印模型输入/输出信息 */
-    dl::TensorBase *inp = s_emotion_model->get_input();
+    dl::TensorBase *inp = s_emotion_model->get_inputs().begin()->second;
     if (inp) {
         ESP_LOGI(TAG, "Input:  shape=[%d,%d,%d,%d] dtype=%d exp=%d",
                  inp->shape[0], inp->shape[1], inp->shape[2], inp->shape[3],
@@ -80,7 +86,7 @@ static bool preprocess_face(const uint8_t *rgb565_buf,
                             uint32_t stride,
                             int fx, int fy, int fw, int fh)
 {
-    dl::TensorBase *input = s_emotion_model->get_input();
+    dl::TensorBase *input = s_emotion_model->get_inputs().begin()->second;
     if (!input) return false;
 
     int out_h = input->shape[1];  // 48

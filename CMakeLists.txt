@@ -4,7 +4,8 @@
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
-set(COMPONENTS main) # "Trim" the build. Include the minimal set of components; main and anything it depends on.
+set(COMPONENTS main human_face_detect)
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/components")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(display)
 add_compile_options("-DLV_CONF_PATH=${CMAKE_SOURCE_DIR}/main/lv_conf.h")
