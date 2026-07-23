@@ -1,171 +1,169 @@
-# CLAUDE.md
+# CLAUDE.md — 情绪守护项目
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## 项目概述
 
-## Project Overview
+基于 ESP32-P4-Function-EV-Board 的情绪识别 + 大模型聊天终端。
+CSI 摄像头实时捕获 → 人脸检测 → 情绪分类 → 大模型聊天。
 
-**Smart Vision Pose Assessment → Emotion + LLM Chat Terminal** (in transition).
+**目标**: 情绪监管与陪伴聊天
+**框架**: ESP-IDF v5.5.4, LVGL v9.5.0 (`esp_lvgl_port` v2.8.0)
+**硬件**: ESP32-P4-Function-EV-Board, DSI LCD (EK79007), MIPI-CSI 摄像头 (SC2336/OV5647)
 
-Originally a real-time exercise pose evaluator, now pivoting toward an emotion-detection-enabled LLM chat terminal on ESP32-P4. The pose pipeline was too slow; the new direction uses a lightweight EmotionCNN for face-based emotion recognition paired with a WiFi-connected LLM chat UI.
+---
 
-**Target**: ESP32-P4-Function-EV-Board with DSI LCD (EK79007), MIPI-CSI camera (OV5647/SC2336)  
-**Framework**: ESP-IDF v5.5.4, LVGL v9.5.0 (`esp_lvgl_port` v2.8.0)
+## 当前架构 (2026-07-22)
 
-## Project Status (2025-07-22)
+```
+Camera → CSI V4L2 → 30fps RGB565
+  │
+  ├─ Camera Callback (Core 1, 30fps)
+  │    ├─ memcpy → s_fb_disp (显示缓冲)
+  │    ├─ face_detect_run() [ESP-DL, ~32ms]
+  │    ├─ draw_rect_rgb565() + ui_update_emotion()
+  │    └─ lv_refr_now()
+  │
+  └─ emotion_task (Core 0, 每2秒)
+       ├─ memcpy face ROI → roi_buf
+       ├─ emotion_tflite_run() [TFLite Micro INT8, ~130ms]
+       └─ update s_ai_classes[] (供相机回调读取)
+```
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| MIPI-CSI camera | ✅ Working | V4L2 MMAP, RGB565, ~30fps |
-| LVGL UI | ✅ Working | Pose skeleton drawing, camera preview, angles panel |
-| MoveNet pose inference | ✅ Working | TFLite Micro, ~100-200ms/inference |
-| EmotionCNN inference | ⏸️ Files exist, not wired | `emotion_estimator.*` in model_loader/ but not in CMakeLists |
-| LLM chat terminal | ❌ Not started | — |
+### 状态栏 → 左图例 + 相机 + 右信息 → 建议栏 → 控制栏
 
-## Build Commands
+```
+┌──────────────────────────────────────────┐
+│ 情绪守护          启动中          30 FPS │ 44px
+├──────┬────────────────────┬──────────────┤
+│ 生气 │                    │    平静       │
+│ 厌恶 │   相机预览          │    92%       │
+│ 害怕 │  (比例缩放填充)     │  ─────────   │
+│ 开心 │                    │ 享受此刻宁静  │
+│ 难过 │   [😐 平静 92%]     │    0 min     │
+│ 惊讶 │   (左上角徽章)      │              │
+│ 平静 │                    │              │
+├──────┴────────────────────┴──────────────┤
+│ 💡 提示文字（自动滚动）                    │ auto
+├──────────────────────────────────────────┤
+│      [监控中]                  [⚙️]      │ 52px
+└──────────────────────────────────────────┘
+```
 
-```powershell
-# Activate ESP-IDF (required once per PowerShell session)
-. "G:\Espressif\frameworks\esp-idf-v5.5.4\export.ps1"
+## 关键文件
 
-# Build for target board
+| 文件 | 说明 |
+|------|------|
+| `main/app_main.c` | 入口: 显示初始化, 三缓冲, 相机回调, 人脸检测, 情绪任务, 监控按钮控制 |
+| `main/ui/ui.c` | LVGL UI: 暗色主题, 三栏布局, 情绪徽章(左上角), 图例(左竖排), 信息面板(右), 建议栏 |
+| `main/ui/ui.h` | UI 公共 API (含 `ui_update_emotion()`, `ui_hide_emotion()`, `ui_is_monitoring()`) |
+| `main/ui_font_zh_22.c` | 22px 中文字体 (220 字, 由 `tools/generate_ui_font.py` 从 Deng.ttf 生成) |
+| `main/camera/camera.c` | CSI V4L2 摄像头驱动 (MIPI-CSI RGB565, MMAP 三缓冲) |
+| `main/sdcard/sdcard_init.cpp` | SDMMC 挂载到 `/sdcard` |
+| `main/model_loader/face_detect_wrapper.cpp` | ESP-DL 人脸检测 (HumanFaceDetect MSRMNP_S8_V1) |
+| `main/model_loader/emotion_tflite.cpp` | TFLite Micro 情绪识别 INT8 (48×48 灰度, 7 类, ~130ms) |
+| `main/llm/llm_client.c` | (预留) 大模型 HTTPS 客户端, 百度 AI Studio |
+| `main/llm/llm_config.h` | (预留) WiFi 密码 + API Key 配置 |
+| `main/wifi/wifi.c` | (预留) WiFi Station 连接 (基于官方 station 例程) |
+| `tools/generate_ui_font.py` | 字体生成脚本, 编辑 TEXT 字串后运行 |
+| `tools/convert_emotion_int8.py` | ONNX → INT8 TFLite 模型转换脚本 |
+| `ESP-DL_COMPAT.md` | ESP-DL 模型(per-channel)不兼容性说明 |
+
+## 模型
+
+| 功能 | 框架 | 模型路径 (SD卡) | 延迟 |
+|------|------|----------------|:----:|
+| 人脸检测 | ESP-DL | `/sdcard/models/human_face_detect_msr_s8_v1.espdl` + `mnp_s8_v1.espdl` | ~32ms |
+| 情绪识别 | TFLite Micro INT8 | `/sdcard/models/emotion_cnn_aug_int8.tflite` (95KB) | ~130ms |
+
+### 情绪映射
+
+| 编号 | 中文 | 颜色 | 贴士 |
+|:---:|:----:|:----:|------|
+| 0 | 生气 | `#E53935` 红 | 深呼吸冷静一下 |
+| 1 | 厌恶 | `#2E7D32` 深绿 | 试着放宽心吧 |
+| 2 | 害怕 | `#1565C0` 蓝 | 别怕你很安全 |
+| 3 | 开心 | `#43A047` 绿 | 保持好心情 |
+| 4 | 难过 | `#E53935` 红 | 想点开心的事 |
+| 5 | 惊讶 | `#FDD835` 黄 | 哇真惊喜呢 |
+| 6 | 平静 | `#78909C` 灰 | 享受此刻宁静 |
+
+## 构建命令
+
+```bash
+# 完整构建
 idf.py -D SDKCONFIG_DEFAULTS=sdkconfig.bsp.esp32_p4_function_ev_board build
 
-# Build + flash + monitor
-idf.py -D SDKCONFIG_DEFAULTS=sdkconfig.bsp.esp32_p4_function_ev_board -p PORT flash monitor
+# 构建+烧录+监视
+idf.py -D SDKCONFIG_DEFAULTS=sdkconfig.bsp.esp32_p4_function_ev_board -p COM7 build flash monitor
+
+# 字体重新生成
+python tools/generate_ui_font.py
 ```
 
-The active board config is `sdkconfig.bsp.esp32_p4_function_ev_board`. `sdkconfig.defaults` provides the base.
+SDKCONFIG 使用 `sdkconfig.bsp.esp32_p4_function_ev_board` 作为 board 覆盖配置。
 
-## Key Source Files
+## 内存布局
 
-| File | Status | Purpose |
-|------|--------|---------|
-| `main/app_main.c` | Active | Entry — display, dual PSRAM buffer, camera, pose inference task |
-| `main/CMakeLists.txt` | Active | Build config — MoveNet TFLite path (emotion_estimator NOT included) |
-| `main/camera/camera.c` | Active | MIPI-CSI V4L2 driver — MMAP capture, PSRAM fb, Core 1 capture task |
-| `main/camera/camera.h` | Active | Camera API |
-| `main/model_loader/pose_estimator.cpp` | Active | MoveNet TFLite Micro inference (was YOLO ESP-DL) |
-| `main/model_loader/pose_estimator.hpp` | Active | C/C++ bridge for pose estimator |
-| `main/model_loader/emotion_estimator.cpp` | **Unused** | EmotionCNN ESP-DL inference — not in CMakeLists |
-| `main/model_loader/emotion_estimator.hpp` | **Unused** | C/C++ bridge for emotion estimator |
-| `main/sdcard/sdcard_init.cpp` | Active | SDMMC mount via BSP (`/sdcard`) |
-| `main/ui/ui.c` | Active | LVGL UI — skeleton, camera preview, angles panel |
-| `main/ui/ui.h` | Active | UI API |
-| `main/ui/ui_font_zh_22.c` | Active | Chinese font (~100 CJK chars from Deng.ttf) |
-| `partitions.csv` | Active | 6M factory + 2M SPIFFS |
-| `sdkconfig.defaults` | Active | ESP32-P4, MIPI-CSI, PSRAM, LVGL9 config |
-| `tools/generate_ui_font.py` | Active | Font generator from `C:\Windows\Fonts\Deng.ttf` |
+| 缓冲 | 位置 | 大小 |
+|------|------|:----:|
+| `s_fb_cap[2]` (乒乓捕获) | PSRAM, 64B对齐 | 2 × 614KB |
+| `s_fb_disp` (显示) | PSRAM, 64B对齐 | 614KB |
+| `roi_buf` (情绪任务) | PSRAM, 32B对齐 | 614KB |
+| TFLite 张量竞技场 | PSRAM | 512KB |
+| 人脸检测模型数据 | PSRAM | ~1MB |
 
-## Architecture (Current)
-
-### Startup flow
+### 三缓冲防撕裂
 ```
-bsp_display_start_with_config() → DSI LCD + LVGL
-  → heap_caps_aligned_alloc × 2 (PSRAM dual buffer: 640×480×2 each)
-  → ui_init() + fps_timer_cb
-  → sdcard_init() → SD card mount at /sdcard
-  → pose_estimator_load_and_print() → MoveNet TFLite model load
-  → cam_start(640, 480, 30, on_camera_frame) → MIPI-CSI V4L2
-  → xTaskCreatePinnedToCore(pose_inference_task, Core 1, prio 5)
+Camera DMA → s_fb_cap[0] ← 乒乓 → s_fb_cap[1]
+                                      ↓ LVGL lock
+                                 s_fb_disp → canvas → lv_refr_now()
 ```
 
-### Camera pipeline (MIPI-CSI V4L2)
-```
-bsp_camera_start() → open("/dev/video0") → VIDIOC_S_FMT (RGB565)
-  → alloc_psram_fb() → VIDIOC_REQBUFS(3) → mmap × 3 → VIDIOC_STREAMON
-  → xTaskCreatePinnedToCore(cam_capture_task, Core 1)
-     → loop: DQBUF → memcpy to PSRAM fb → callback → QBUF
-```
+## 关键依赖
 
-### Pose inference task (Core 1, ~10fps cap)
-```
-loop:
-  wait for s_ready_idx >= 0
-  pose_estimator_run(s_fb[ridx], w, h, stride, joints, confs, &score)
-  if OK: ui_update_skeleton() + deviations
-  else:  ui_update_skeleton(NULL) (clear)
-  vTaskDelay(100ms)
-```
+| 组件 | 用途 |
+|------|------|
+| `esp32_p4_function_ev_board` | BSP (LCD, CSI, SD) |
+| `esp-tflite-micro` | 情绪推理 (INT8) |
+| `esp_lvgl_port` + `lvgl/lvgl` | LVGL |
+| `esp_video` | ISP 视频管线 |
+| `esp_lcd_ek79007` | DSI LCD |
+| `esp_http_client` + `json` | (预留) LLM HTTPS |
+| `human_face_detect` | 人脸检测 ESP-DL |
 
-### Current memory layout (MIPI-CSI + MoveNet)
+## 开发注意事项
 
-| What | Where | Size |
-|------|-------|------|
-| Model (MoveNet TFLite) | SD card | ~2.9 MB |
-| `s_fb[0]` | PSRAM, 64B-aligned | 640×480×2 = 614 KB |
-| `s_fb[1]` | PSRAM, 64B-aligned | 640×480×2 = 614 KB |
-| `s_cam.fb_psram` | PSRAM, 32B-aligned | 640×480×2 = 614 KB |
-| Tensor arena (TFLite) | PSRAM | 2 MB |
-| SPIFFS | Flash | 2 MB |
-| Factory app | Flash | 6 MB |
+### 字体修改
+1. 修改 `tools/generate_ui_font.py` 的 `TEXT` 字串
+2. `python tools/generate_ui_font.py` 重新生成
+3. 提交 `main/ui_font_zh_22.c` + `.h`
+4. **不要**在 `main/ui/` 下留有副本 (已清理)
 
-### Comparison with previous YOLO/UVC architecture
+### 跨核数据竞争
+AI 任务(Core 0)和相机回调(Core 1)共享数据时必须:
+- 读之前: `esp_cache_msync(INVALIDATE)` 刷新缓存
+- 写之后: `esp_cache_msync(TYPE_DATA)` 写回
+- 状态标志: `__sync_synchronize()` 内存屏障 + `volatile`
 
-| Aspect | Old (YOLO + UVC) | Current (MoveNet + MIPI-CSI) |
-|--------|-------------------|------------------------------|
-| Camera | USB UVC (LRCP U3-JX02) | MIPI-CSI (OV5647/SC2336) |
-| Frame format | MJPG → HW JPEG decode → RGB565 | RGB565 direct from ISP |
-| Inference engine | ESP-DL (`dl::Model`) | TFLite Micro (`tflite::MicroInterpreter`) |
-| Model | YOLO26n-pose (~3.5MB .espdl) | MoveNet Lightning (~2.9MB .tflite) |
-| Input size | 640×640 letterbox | 192×192 |
-| Build deps | `esp-dl`, `usb_host_uvc`, `esp_new_jpeg` | `esp-tflite-micro` |
-| Demo mode | Yes (animated skeleton) | No |
+### 情绪模型
+- `emotion_cnn_aug.espdl` (ESP-DL) 用 PER_CHANNEL 量化, 当前 ESP-DL `libfbs_model.a` 只支持 PER_TENSOR → 改用 TFLite Micro INT8
+- INT8 模型可用 `tools/convert_emotion_int8.py` 从 ONNX 重新导出
 
-## Previous YOLO/UVC Debugging (archived, for reference)
+### SD 卡模型存放
+所有模型放在 `/sdcard/models/` 目录下:
+- `human_face_detect_msr_s8_v1.espdl`
+- `mnp_s8_v1.espdl`
+- `emotion_cnn_aug_int8.tflite`
 
-The original USB UVC implementation was abandoned due to ISOC transfer corruption on ESP32-P4's DWC2 USB host. Key findings:
-- Camera: LRCP U3-JX02, MJPG 640×480 @ 30fps, ~50KB frames
-- Root cause: DWC2 ISOC scheduling cannot reliably handle UVC streams
-- MIPI-CSI migration eliminated all USB/UVC/JPEG issues
+### WiFi / LLM 集成
+`main/llm/` 和 `main/wifi/` 模块已创建但未接入 app_main.c。
+使用时需:
+1. 修改 `llm_config.h` 填入 WiFi SSID/密码 + API Key
+2. 在 `app_main.c` 中调用 `wifi_init_sta()` + `llm_init()`
+3. CMakeLists.txt 已包含源文件和依赖
 
-## SD Card Models (E:/models/)
+## 已知问题
 
-| File | Size | Status |
-|------|------|--------|
-| `movenet_singlepose_lightning_int8.tflite` | 2.9 MB | ✅ Active |
-| `emotion_cnn_aug.espdl` | 106 KB | ⏸️ Ready, not integrated |
-| `emotion_cnn_80k.espdl` | 106 KB | ⏸️ Alternate weights |
-| `yolo26n-pose_esp32p4.espdl` | 3.5 MB | ❌ Deprecated |
-| `posenet_mobilenet*.espdl` | 3.6 MB | ❌ Deprecated |
-| `coco_pose_yolo11n_pose_*.espdl` | ~3 MB | ❌ Deprecated |
-
-## EmotionCNN Model (ready for integration)
-
-- **Weights**: `emotion_cnn_aug.espdl` (106 KB, INT8)
-- **Architecture**: 4 residual blocks, 76,855 params, 1×48×48 grayscale input
-- **Output**: 7-class (Angry/Disgust/Fear/Happy/Sad/Surprise/Neutral)
-- **Training**: PC-side with strong augmentation (rotation ±12°, scale 0.85-1.15, RandomErasing), 61.4% test accuracy on FER2013
-- **ESP-DL API**: `dl::Model` with `fbs::MODEL_LOCATION_IN_SDCARD`
-- **Integration files**: `emotion_estimator.cpp/hpp` exist in `main/model_loader/` but need to be wired into CMakeLists.txt and app_main.c
-
-## Planned: Emotion + LLM Chat Terminal
-
-Next steps for the pivot:
-1. Wire `emotion_estimator` into the build and inference loop
-2. Redesign UI: remove pose skeleton/angles, add chat message list + text input
-3. Add WiFi + HTTP client for LLM API calls
-4. Add face detection (can reuse nose/eyes from MoveNet, or add lightweight face detector)
-
-## Critical Config
-
-- `CONFIG_SPIRAM=y` + `CONFIG_SPIRAM_MODE_HEX=y` — PSRAM mandatory
-- `CONFIG_CAMERA_OV5647=y` + `CONFIG_CAMERA_SC2336=y` — MIPI-CSI auto-detect
-- `CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y` — ISP RGB565 output
-- `CONFIG_LV_CONF_SKIP=y` — custom `lv_conf.h` in `main/`
-- `CONFIG_LV_USE_FLOAT=y` — for `lv_point_precise_t`
-- `CONFIG_LV_USE_PERF_MONITOR=y` — FPS overlay
-- `CONFIG_PARTITION_TABLE_CUSTOM=y` — 6M + 2M SPIFFS
-
-## Key Dependencies (current)
-
-| Component | Purpose |
-|-----------|---------|
-| `esp32_p4_function_ev_board` | BSP (display, camera, SD) |
-| `esp-tflite-micro` | MoveNet inference |
-| `esp_lvgl_port` + `lvgl/lvgl` | LVGL graphics |
-| `esp_video` | ISP pipeline controller |
-| `esp_lcd_ek79007` | DSI LCD driver |
-
-### Removed dependencies (from YOLO/UVC era)
-
-`esp-dl`, `usb_host_uvc`, `esp_new_jpeg`, `esp_driver_jpeg` are no longer required.
+- TFLite Micro INT8 延迟 ~130ms (可用但非最优)
+- 多人脸场景只处理第一张脸
+- WiFi/LLM 需用户自行填入凭据
+- 建议栏文字使用 `LV_LABEL_LONG_SCROLL_CIRCULAR` 自动滚动

@@ -3,7 +3,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-
 #include "lvgl.h"
 
 #ifdef __cplusplus
@@ -21,6 +20,11 @@ void ui_update_fps(float fps);
 void ui_set_system_status(const char *status);
 void ui_set_mode_text(const char *mode);
 void ui_update_suggestion(const char *text);
+
+void ui_update_emotion(int emotion_class, float confidence);
+void ui_hide_emotion(void);
+bool ui_is_monitoring(void);
+
 void ui_show_message(const char *title, const char *msg, uint32_t duration_ms);
 
 #ifdef __cplusplus
