@@ -11,7 +11,7 @@ CSI 摄像头实时捕获 → 人脸检测 → 情绪分类 → 大模型聊天�
 
 ---
 
-## 当前架构 (2026-07-22)
+## 当前架构 (2026-07-23)
 
 ```
 Camera → CSI V4L2 → 30fps RGB565
@@ -22,10 +22,16 @@ Camera → CSI V4L2 → 30fps RGB565
   │    ├─ draw_rect_rgb565() + ui_update_emotion()
   │    └─ lv_refr_now()
   │
-  └─ emotion_task (Core 0, 每2秒)
-       ├─ memcpy face ROI → roi_buf
-       ├─ emotion_tflite_run() [TFLite Micro INT8, ~130ms]
-       └─ update s_ai_classes[] (供相机回调读取)
+  ├─ emotion_task (Core 0, 每2秒)
+  │    ├─ memcpy face ROI → roi_buf
+  │    ├─ emotion_tflite_run() [TFLite Micro INT8, ~130ms]
+  │    ├─ update s_ai_classes[] (供相机回调读取)
+  │    └─ llm_set_emotion_context() [NEW] 注入情绪到大模型
+  │
+  └─ [NEW] WiFi + LLM 模块
+       ├─ wifi_connect() → 连接无线路由器
+       ├─ llm_init() → 初始化 espressif/openai 组件
+       └─ llm_chat() → 发送消息 / 接收回复（带情绪上下文）
 ```
 
 ### 状态栏 → 左图例 + 相机 + 右信息 → 建议栏 → 控制栏
@@ -60,12 +66,191 @@ Camera → CSI V4L2 → 30fps RGB565
 | `main/sdcard/sdcard_init.cpp` | SDMMC 挂载到 `/sdcard` |
 | `main/model_loader/face_detect_wrapper.cpp` | ESP-DL 人脸检测 (HumanFaceDetect MSRMNP_S8_V1) |
 | `main/model_loader/emotion_tflite.cpp` | TFLite Micro 情绪识别 INT8 (48×48 灰度, 7 类, ~130ms) |
-| `main/llm/llm_client.c` | (预留) 大模型 HTTPS 客户端, 百度 AI Studio |
-| `main/llm/llm_config.h` | (预留) WiFi 密码 + API Key 配置 |
-| `main/wifi/wifi.c` | (预留) WiFi Station 连接 (基于官方 station 例程) |
-| `tools/generate_ui_font.py` | 字体生成脚本, 编辑 TEXT 字串后运行 |
-| `tools/convert_emotion_int8.py` | ONNX → INT8 TFLite 模型转换脚本 |
-| `ESP-DL_COMPAT.md` | ESP-DL 模型(per-channel)不兼容性说明 |
+| `main/wifi/wifi.h` | **[NEW]** WiFi Station API (`wifi_connect`, `wifi_wait_connected`, `wifi_is_connected`) |
+| `main/wifi/wifi.c` | **[NEW]** WiFi 实现: netif 初始化, 事件组同步, 自动重连 |
+| `main/llm/llm_config.h` | **[NEW]** 大模型配置: Base URL 预设 (OpenAI/DeepSeek/Qwen/Groq/…), 模型名预设, 情绪提示词声明 |
+| `main/llm/llm_client.h` | **[NEW]** 大模型客户端 API (`llm_init`, `llm_chat`, `llm_chat_async`, `llm_set_emotion_context`) |
+| `main/llm/llm_client.c` | **[NEW]** 大模型客户端实现: 封装 `espressif/openai` 组件, 情绪感知系统提示词, 异步支持 |
+
+### 遗留文件（不参与编译）
+
+| 文件 | 说明 |
+|------|------|
+| `main/model_loader/emotion_estimator.cpp` | 旧的 ESP-DL 情绪模型实现 (PER_CHANNEL 量化不兼容 → 改为 TFLite) |
+| `main/model_loader/emotion_estimator.hpp` | 旧情绪模型头文件 |
+| `main/legacy/lvgl_demo_ui.c` | 早期 LVGL demo |
+
+---
+
+## WiFi 模块 (`main/wifi/`)
+
+### API
+
+```c
+esp_err_t wifi_connect(const char *ssid, const char *password);
+esp_err_t wifi_wait_connected(uint32_t timeout_ms);   // 0 = 无限等待
+bool      wifi_is_connected(void);
+esp_err_t wifi_get_ip(char *buf, size_t size);
+void      wifi_disconnect(void);
+```
+
+### 使用模式
+
+```c
+// 非阻塞连接 → 阻塞等待 IP → 就绪
+wifi_connect("MyWiFi", "password");
+if (wifi_wait_connected(15000) == ESP_OK) {
+    ESP_LOGI(TAG, "WiFi ready");
+    // 此时可以使用 llm_client
+} else {
+    ESP_LOGE(TAG, "WiFi timeout");
+}
+```
+
+### 实现细节
+
+- 内部一次性完成 `nvs_flash_init` / `esp_netif_init` / `esp_event_loop_create_default`
+- 使用 FreeRTOS 事件组 `WIFI_CONNECTED_BIT` 同步连接状态
+- 断开自动重连 (`WIFI_EVENT_STA_DISCONNECTED` → `esp_wifi_connect()`)
+- `wifi_connect()` 幂等：已连接直接返回 `ESP_OK`
+- WiFi 密码为空时自动设为 `WIFI_AUTH_OPEN`（开放网络）
+
+---
+
+## 大模型模块 (`main/llm/`)
+
+### 架构
+
+```
+llm_client.c (薄封装, ~290行)
+  │
+  ├─ 情绪感知系统提示词 → chat->setSystem()
+  ├─ 同步/异步聊天 API
+  ├─ 互斥锁线程安全
+  │
+  ▼
+espressif/openai (官方组件, ~2700行, idf_component.yml 已引入)
+  │
+  ├─ OpenAICreate(api_key) → OpenAIChangeBaseURL(url) → chatCreate()
+  ├─ TLS: esp_crt_bundle_attach (正确证书验证, 非跳过)
+  ├─ HTTP: esp_http_client POST
+  ├─ JSON: cJSON 构建/解析
+  ├─ 对话历史: chat->message(msg, save=true) 自动保存
+  ├─ 错误处理: resp->getError(resp)
+  ├─ 多模态: multiModalMessage (text / image_url / input_audio)
+  └─ 其他: Embedding, Moderation, Image Generation, Audio Speech/Transcription
+```
+
+### API
+
+```c
+// === 生命周期 ===
+esp_err_t llm_init(const llm_config_t *config);
+void      llm_deinit(void);
+
+// === 情绪上下文（核心增值） ===
+void llm_set_emotion_context(int emotion_class, float confidence);
+void llm_set_system_prompt(const char *prompt);  // 手动覆盖, NULL 恢复默认
+
+// === 同步聊天（阻塞调用线程） ===
+esp_err_t llm_chat(const char *user_message,
+                   char *response_buf, size_t buf_size);
+esp_err_t llm_chat_ex(const char *user_message,
+                      char *response_buf, size_t buf_size,
+                      int *out_http_code);
+
+// === 异步聊天（FreeRTOS 任务, 结果回调） ===
+esp_err_t llm_chat_async(const char *user_message,
+                         llm_chat_callback_t callback, void *user_data);
+
+// === 对话历史 ===
+void llm_clear_history(void);
+int  llm_get_turn_count(void);
+
+// === 状态 ===
+bool llm_is_busy(void);
+```
+
+### 配置结构体
+
+```c
+typedef struct {
+    const char *base_url;    // Base URL（尾部带 /），组件自动追加 chat/completions
+    const char *api_key;     // Bearer Token
+    const char *model;       // 模型名称
+    int         max_tokens;  // 最大生成 token 数 (0=默认256)
+    float       temperature; // 采样温度 (0=默认0.8)
+    int         timeout_ms;  // 超时毫秒 (0=默认30000)
+} llm_config_t;
+```
+
+### 预设 Base URL 和模型
+
+| 服务商 | Base URL 宏 | 模型宏 |
+|--------|-----------|--------|
+| OpenAI | `LLM_BASE_OPENAI` | `LLM_MODEL_GPT4O` / `LLM_MODEL_GPT4O_MINI` |
+| DeepSeek | `LLM_BASE_DEEPSEEK` | `LLM_MODEL_DEEPSEEK_CHAT` / `LLM_MODEL_DEEPSEEK_REASONER` |
+| 通义千问 | `LLM_BASE_QWEN` | `LLM_MODEL_QWEN_MAX` / `LLM_MODEL_QWEN_TURBO` |
+| Groq | `LLM_BASE_GROQ` | `LLM_MODEL_GROQ_LLAMA4` |
+| Together | `LLM_BASE_TOGETHER` | 自定义 |
+| 本地 Ollama | `LLM_BASE_OLLAMA` | 自定义 (HTTP 明文, 不需要 TLS) |
+
+### 情绪感知机制
+
+`llm_set_emotion_context()` 根据当前人脸识别到的情绪，动态构建系统提示词并调用 `chat->setSystem()` 注入到对话中：
+
+```
+[基础系统提示词]
+"你是一个温暖、善解人意的情绪陪伴助手，名字叫"小守"…"
+
+    ↓ llm_set_emotion_context(4, 0.88f)  // 难过 88%
+
+[自动拼接为]
+"你是一个温暖、善解人意的情绪陪伴助手…
+ [情绪感知] 难过（置信度 88%）
+ 用户此刻有些难过。请用温暖的话语安慰 TA，给 TA 情感支持。"
+```
+
+7 种情绪（class 0-6）各有专属引导提示词，定义在 `llm_client.c` 的 `LLM_EMOTION_PROMPTS[]` 数组中。
+
+### 最小接入示例
+
+```c
+#include "wifi.h"
+#include "llm_client.h"
+
+// 1. WiFi
+wifi_connect("SSID", "PASSWORD");
+wifi_wait_connected(15000);
+
+// 2. LLM 初始化
+llm_config_t cfg = {
+    .base_url = LLM_BASE_DEEPSEEK,
+    .api_key  = "sk-xxxxxxxxxxxxxxxx",
+    .model    = LLM_MODEL_DEEPSEEK_CHAT,
+};
+llm_init(&cfg);
+
+// 3. 在 emotion_task 中注入情绪（每 2 秒）
+llm_set_emotion_context(s_ai_classes[0], s_ai_confs[0]);
+
+// 4. 聊天
+char reply[512];
+llm_chat("我今天心情不太好", reply, sizeof(reply));
+ESP_LOGI("CHAT", "小守: %s", reply);
+
+// 5. 异步聊天（不阻塞）
+llm_chat_async("讲个笑话", my_callback, NULL);
+```
+
+### 线程安全
+
+- 所有公开 API 通过 FreeRTOS 互斥锁 (`s_ctx.mutex`) 保护共享状态
+- 可在 `emotion_task` (Core 0) 和 UI 事件回调 (Core 1) 中安全调用
+- 异步聊天使用独立 FreeRTOS 任务 (`llm_async`, 优先级 2, 栈 8KB)
+- 同一时间只允许一个异步请求（`s_ctx.busy` 标志位）
+
+---
 
 ## 模型
 
@@ -73,6 +258,7 @@ Camera → CSI V4L2 → 30fps RGB565
 |------|------|----------------|:----:|
 | 人脸检测 | ESP-DL | `/sdcard/models/human_face_detect_msr_s8_v1.espdl` + `mnp_s8_v1.espdl` | ~32ms |
 | 情绪识别 | TFLite Micro INT8 | `/sdcard/models/emotion_cnn_aug_int8.tflite` (95KB) | ~130ms |
+| 大模型聊天 | espressif/openai | HTTPS API 调用, 延迟取决于网络和服务商 | 1-5s |
 
 ### 情绪映射
 
@@ -110,6 +296,8 @@ SDKCONFIG 使用 `sdkconfig.bsp.esp32_p4_function_ev_board` 作为 board 覆盖�
 | `roi_buf` (情绪任务) | PSRAM, 32B对齐 | 614KB |
 | TFLite 张量竞技场 | PSRAM | 512KB |
 | 人脸检测模型数据 | PSRAM | ~1MB |
+| LLM HTTP 响应缓冲 | 栈 (llm_chat) | 4KB |
+| 异步 LLM 任务栈 | FreeRTOS | 8KB |
 
 ### 三缓冲防撕裂
 ```
@@ -127,8 +315,38 @@ Camera DMA → s_fb_cap[0] ← 乒乓 → s_fb_cap[1]
 | `esp_lvgl_port` + `lvgl/lvgl` | LVGL |
 | `esp_video` | ISP 视频管线 |
 | `esp_lcd_ek79007` | DSI LCD |
-| `esp_http_client` + `json` | (预留) LLM HTTPS |
+| `espressif/openai` | **[NEW]** OpenAI 兼容大模型客户端 (ChatCompletion + TLS + JSON) |
+| `esp_http_client` + `json` | (由 `espressif/openai` 间接依赖) |
 | `human_face_detect` | 人脸检测 ESP-DL |
+
+### WiFi 模块额外依赖 (接入时需添加到 CMakeLists REQUIRES)
+
+| 组件 | 用途 |
+|------|------|
+| `nvs_flash` | WiFi 配置存储 |
+| `esp_wifi` | WiFi 驱动 |
+| `esp_netif` | TCP/IP 网络接口 |
+| `esp_event` | 事件循环 (WiFi/IP 事件) |
+
+## CMakeLists.txt 接入说明
+
+WiFi 和 LLM 模块尚未接入 `main/CMakeLists.txt`（未修改任何已有文件）。接入时需修改：
+
+```cmake
+idf_component_register(SRCS "app_main.c" "ui/ui.c" "ui_font_zh_22.c" "camera/camera.c"
+                       "sdcard/sdcard_init.cpp"
+                       "model_loader/face_detect_wrapper.cpp"
+                       "model_loader/emotion_tflite.cpp"
+                       "wifi/wifi.c"                    # ← NEW
+                       "llm/llm_client.c"               # ← NEW
+                       INCLUDE_DIRS "." "ui" "camera" "sdcard" "model_loader" "wifi" "llm"  # ← +wifi +llm
+                       REQUIRES esp_video esp32_p4_function_ev_board esp_lvgl_port lvgl
+                                human_face_detect esp-tflite-micro
+                                nvs_flash esp_wifi esp_netif esp_event   # ← NEW (WiFi 模块)
+                       PRIV_REQUIRES esp_timer esp-dl)
+```
+
+注意：`espressif/openai` 已在 `main/idf_component.yml` 声明为依赖，不需要在 `REQUIRES` 中额外添加。
 
 ## 开发注意事项
 
@@ -155,15 +373,25 @@ AI 任务(Core 0)和相机回调(Core 1)共享数据时必须:
 - `emotion_cnn_aug_int8.tflite`
 
 ### WiFi / LLM 集成
-`main/llm/` 和 `main/wifi/` 模块已创建但未接入 app_main.c。
+`main/wifi/` 和 `main/llm/` 模块已编写完成但未接入 `app_main.c`。
 使用时需:
-1. 修改 `llm_config.h` 填入 WiFi SSID/密码 + API Key
-2. 在 `app_main.c` 中调用 `wifi_init_sta()` + `llm_init()`
-3. CMakeLists.txt 已包含源文件和依赖
+1. 修改 `CMakeLists.txt`（见上方 "CMakeLists.txt 接入说明"）
+2. 在 `app_main.c` 中 `#include "wifi.h"` 和 `#include "llm_client.h"`
+3. SD 卡挂载后调用 `wifi_connect()` + `wifi_wait_connected()`
+4. WiFi 就绪后调用 `llm_init(&cfg)`，填入真实 API Key
+5. 在 `emotion_task` 中调用 `llm_set_emotion_context()` 注入情绪
+6. 通过 `llm_chat()` 或 `llm_chat_async()` 发起对话
+
+### LLM 凭据安全
+- **不要在 `llm_config.h` 中硬编码 API Key**
+- 建议在 `app_main.c` 中使用 `#ifdef` 或独立配置文件管理凭据
+- 提交前确认不包含真实密钥
 
 ## 已知问题
 
 - TFLite Micro INT8 延迟 ~130ms (可用但非最优)
 - 多人脸场景只处理第一张脸
-- WiFi/LLM 需用户自行填入凭据
-- 建议栏文字使用 `LV_LABEL_LONG_SCROLL_CIRCULAR` 自动滚动
+- WiFi/LLM 模块已编写但尚未接入 `app_main.c`
+- `espressif/openai` 组件默认超时 60 秒 (在 `OpenAI_Request` 中硬编码)
+- Async LLM 请求仅支持单并发 (`s_ctx.busy` 标志)
+- 对话历史存储在 PSRAM，受 `MAX_HISTORY_SLOTS` (40条=20轮) 限制

@@ -300,6 +300,20 @@ dependencies:
     - esp32c6
     - esp32c61
     version: 2.0.1
+  espressif/openai:
+    component_hash: b4a7b9765e943ab54d27b643ebf13385fe5a07cd369f04513ef37beb8d510524
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: idf
+      require: private
+      version: '>=4.4.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.1.0
   espressif/usb_host_uvc:
     component_hash: f20c4e4dea50536e2e29daaf589b5f5984402284c155867daef27d6b64869f78
     dependencies:
@@ -339,6 +353,7 @@ direct_dependencies:
 - espressif/esp-nn
 - espressif/esp-tflite-micro
 - espressif/esp32_p4_function_ev_board
-manifest_hash: d98d99ee688aeacdba0aab6d28b00ec321c73341fd8d6e23e6829a0941ddc2d0
+- espressif/openai
+manifest_hash: a92bfaff3fd2bb27b6401a25c8dafb7d2734cbae9496a078487bc702af5b37cd
 target: esp32p4
 version: 2.0.0
