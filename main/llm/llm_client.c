@@ -27,10 +27,13 @@ static const char *TAG = "LLM";
  * 情绪提示词（extern 声明在 llm_config.h）
  * ============================================================ */
 
+/* extern const 确保外部链接（C++ const 默认为内部链接，加 extern 覆盖） */
+extern const char *LLM_EMOTION_NAMES[];
 const char *LLM_EMOTION_NAMES[] = {
     "生气", "厌恶", "害怕", "开心", "难过", "惊讶", "平静"
 };
 
+extern const char *LLM_EMOTION_PROMPTS[];
 const char *LLM_EMOTION_PROMPTS[] = {
     "用户此刻感到愤怒。请用温和、安抚的语气回应，帮助 TA 平复情绪。",
     "用户此刻感到厌恶。请试着理解 TA 的感受，引导 TA 放宽心态。",
@@ -46,7 +49,7 @@ const char *LLM_EMOTION_PROMPTS[] = {
  * ============================================================ */
 
 static const char *DEFAULT_SYSTEM_PROMPT =
-    "你是一个温暖、善解人意的情绪陪伴助手，名字叫"小守"。"
+    "你是一个温暖、善解人意的情绪陪伴助手，名字叫「小守」。"
     "请用简洁自然的中文回复，像朋友聊天一样，每次回复控制在 2-4 句话。";
 
 /* ============================================================
@@ -84,10 +87,8 @@ static struct {
     char        sys_buf[MAX_SYS_PROMPT];
     char       *custom_prompt;          /* 用户手动设置（堆分配）            */
 
-    /* 情绪上下文 */
-    int    emotion_class;
-    float  emotion_conf;
-    bool   has_emotion;
+    /* 情绪提供者回调（Pull 模式：每次 chat 前实时拉取） */
+    llm_emotion_provider_t  emotion_provider;
 
     /* 统计 */
     int     turn_count;
@@ -111,15 +112,24 @@ static void rebuild_system_prompt(void)
                      ? s_ctx.custom_prompt
                      : DEFAULT_SYSTEM_PROMPT;
 
-    if (s_ctx.has_emotion && s_ctx.emotion_class >= 0 && s_ctx.emotion_class < 7) {
-        int pct = (int)(s_ctx.emotion_conf * 100.0f + 0.5f);
+    /* Pull 模式：通过回调实时拉取最新情绪 */
+    bool has = false;
+    int  cls = 6;
+    float conf = 0.0f;
+    if (s_ctx.emotion_provider) {
+        s_ctx.emotion_provider(&cls, &conf);
+        has = (cls >= 0 && cls <= 6);
+    }
+
+    if (has) {
+        int pct = (int)(conf * 100.0f + 0.5f);
         if (pct > 100) pct = 100;
         snprintf(s_ctx.sys_buf, sizeof(s_ctx.sys_buf),
                  "%s\n\n[情绪感知] %s（置信度 %d%%）\n%s",
                  base,
-                 LLM_EMOTION_NAMES[s_ctx.emotion_class],
+                 LLM_EMOTION_NAMES[cls],
                  pct,
-                 LLM_EMOTION_PROMPTS[s_ctx.emotion_class]);
+                 LLM_EMOTION_PROMPTS[cls]);
     } else {
         strncpy(s_ctx.sys_buf, base, sizeof(s_ctx.sys_buf) - 1);
         s_ctx.sys_buf[sizeof(s_ctx.sys_buf) - 1] = '\0';
@@ -219,8 +229,7 @@ esp_err_t llm_init(const llm_config_t *config)
     s_ctx.chat->setMaxTokens(s_ctx.chat, s_ctx.max_tokens);
     s_ctx.chat->setTemperature(s_ctx.chat, s_ctx.temperature);
 
-    /* 初始系统提示词 */
-    s_ctx.has_emotion = false;
+    /* 初始系统提示词（不含情绪：provider 尚未注册，rebuild 自然跳过） */
     rebuild_system_prompt();
 
     s_ctx.turn_count = 0;
@@ -239,7 +248,7 @@ void llm_deinit(void)
     if (s_ctx.oai)  { OpenAIDelete(s_ctx.oai);           s_ctx.oai  = NULL; }
     free(s_ctx.custom_prompt);
     s_ctx.custom_prompt = NULL;
-    s_ctx.has_emotion = false;
+    s_ctx.emotion_provider = NULL;
     s_ctx.turn_count = 0;
     unlock();
 
@@ -250,18 +259,15 @@ void llm_deinit(void)
     ESP_LOGI(TAG, "Deinitialized");
 }
 
-/* ---- 情绪上下文 ---- */
+/* ---- 情绪上下文（Pull 模式） ---- */
 
-void llm_set_emotion_context(int emotion_class, float confidence)
+void llm_set_emotion_provider(llm_emotion_provider_t provider)
 {
-    if (emotion_class < 0 || emotion_class > 6) return;
-
     lock();
-    s_ctx.emotion_class = emotion_class;
-    s_ctx.emotion_conf  = confidence;
-    s_ctx.has_emotion   = true;
-    rebuild_system_prompt();   /* 更新 chat->setSystem() */
+    s_ctx.emotion_provider = provider;
     unlock();
+    ESP_LOGI(TAG, "Emotion provider %s",
+             provider ? "registered" : "unregistered");
 }
 
 void llm_set_system_prompt(const char *prompt)
@@ -299,6 +305,9 @@ esp_err_t llm_chat_ex(const char *user_message,
     }
 
     lock();
+
+    /* Pull 模式：每次聊天前实时拉取最新情绪 → 构建系统提示词 */
+    rebuild_system_prompt();
 
     int64_t t0 = esp_timer_get_time();
 

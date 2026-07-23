@@ -2,3 +2,6 @@
 .cache/
 build/
 managed_components/
+
+# 凭据文件（WiFi 密码 + LLM API Key）
+main/llm/secrets.h

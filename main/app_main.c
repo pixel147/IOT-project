@@ -9,6 +9,9 @@
 #include "sdcard_init.h"
 #include "face_detect_wrapper.hpp"
 #include "emotion_tflite.hpp"
+#include "wifi.h"
+#include "llm_client.h"
+#include "secrets.h"
 
 #include <string.h>
 
@@ -142,6 +145,57 @@ static void emotion_task(void *arg)
     }
 }
 
+/* ---- 情绪提供者回调（Pull 模式：LLM 每次 chat 前实时拉取） ---- */
+static void provide_emotion(int *cls, float *conf)
+{
+    *cls  = s_ai_classes[0];
+    *conf = s_ai_confs[0];
+}
+
+/* ---- LLM 建议任务（每30秒生成陪伴提示） ---- */
+#define LLM_SUGGESTION_INTERVAL_MS 30000
+#define LLM_PROMPT_BUF_SIZE 256
+#define LLM_RESP_BUF_SIZE   512
+
+static void llm_suggestion_task(void *arg)
+{
+    (void)arg;
+    char prompt[LLM_PROMPT_BUF_SIZE];
+    char response[LLM_RESP_BUF_SIZE];
+
+    /* 等待 LLM 初始化完成 */
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    while (true) {
+        /* 构造情绪感知提示词 */
+        int cls = s_ai_classes[0];
+        float conf = s_ai_confs[0];
+        const char *emo_name = "未知";
+        if (cls >= 0 && cls < 7) {
+            emo_name = LLM_EMOTION_NAMES[cls];
+        }
+        snprintf(prompt, sizeof(prompt),
+                 "用户当前情绪是\"%s\"（置信度%d%%）。"
+                 "请根据这个情绪，用1-2句简短温暖的话给出陪伴建议（不超过25字）",
+                 emo_name, (int)(conf * 100 + 0.5f));
+
+        response[0] = '\0';
+        esp_err_t ret = llm_chat(prompt, response, sizeof(response));
+
+        /* 更新建议栏（需 LVGL 锁） */
+        if (lvgl_port_lock(-1)) {
+            if (ret == ESP_OK && response[0]) {
+                ui_update_suggestion(response);
+            } else {
+                ui_update_suggestion("正在连接大模型…");
+            }
+            lvgl_port_unlock();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(LLM_SUGGESTION_INTERVAL_MS));
+    }
+}
+
 /* ---- 主函数 ---- */
 void app_main(void)
 {
@@ -213,7 +267,11 @@ void app_main(void)
     }
     lvgl_port_unlock();
 
-    /* 5. 启动 MIPI-CSI 摄像头 */
+    /* 5. 启动 WiFi（非阻塞，立即返回） */
+    ESP_LOGI(TAG, "Connecting WiFi to %s…", WIFI_SSID);
+    wifi_connect(WIFI_SSID, WIFI_PASSWORD);
+
+    /* 6. 启动 MIPI-CSI 摄像头（不依赖 WiFi，优先初始化） */
     esp_err_t cam_ret = ESP_ERR_NOT_SUPPORTED;
 #if CONFIG_IDF_TARGET_ESP32P4
     cam_ret = cam_start(CAM_WIDTH, CAM_HEIGHT, 30, on_camera_frame);
@@ -222,8 +280,44 @@ void app_main(void)
     ui_set_system_status(cam_ret == ESP_OK ? "摄像头：已连接" : "摄像头：失败");
     lvgl_port_unlock();
 
+    /* 7. 等 WiFi 连接（后台进行，不阻塞摄像头） */
+    ui_set_system_status("WiFi 连接中…");
+    esp_err_t wifi_ret = wifi_wait_connected(15000);
+    lvgl_port_lock(-1);
+    if (wifi_ret == ESP_OK) {
+        ui_set_system_status("WiFi：已连接");
+        ESP_LOGI(TAG, "WiFi connected");
+
+        /* 初始化大模型 */
+        llm_config_t llm_cfg = {
+            .base_url     = LLM_BASE_URL,
+            .api_key      = LLM_API_KEY,
+            .model        = LLM_MODEL_NAME,
+            .max_tokens   = LLM_DEFAULT_MAX_TOKENS,
+            .temperature  = LLM_DEFAULT_TEMPERATURE,
+            .timeout_ms   = LLM_DEFAULT_TIMEOUT_MS,
+        };
+        esp_err_t llm_ret = llm_init(&llm_cfg);
+        if (llm_ret == ESP_OK) {
+            /* 注册情绪提供者（Pull 模式：每次 chat 前实时拉取） */
+            llm_set_emotion_provider(provide_emotion);
+            ui_set_system_status("大模型：已就绪");
+            ESP_LOGI(TAG, "LLM ready: %s", LLM_MODEL_NAME);
+        } else {
+            ui_set_system_status("大模型：初始化失败");
+            ESP_LOGW(TAG, "LLM init failed: %d", llm_ret);
+        }
+    } else {
+        ui_set_system_status("WiFi：连接失败");
+        ESP_LOGW(TAG, "WiFi timeout or failed");
+    }
+    lvgl_port_unlock();
+
     ESP_LOGI(TAG, "System ready — camera preview + UI running");
 
-    /* 6. 启动情绪识别任务（独立于相机回调，每2秒一次） */
+    /* 8. 启动情绪识别任务（独立于相机回调，每2秒一次） */
     xTaskCreatePinnedToCore(emotion_task, "emotion", 16384, NULL, 3, NULL, 0);
+
+    /* 9. 启动 LLM 建议任务（每30秒生成陪伴提示） */
+    xTaskCreatePinnedToCore(llm_suggestion_task, "llm_suggest", 12288, NULL, 2, NULL, 0);
 }

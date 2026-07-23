@@ -136,7 +136,7 @@ void ui_create_main_screen(void)
 
     /* ---- 左：竖排图例 ---- */
     lv_obj_t *lgd = lv_obj_create(mid);
-    lv_obj_set_size(lgd, 44, LV_PCT(100));
+    lv_obj_set_size(lgd, 72, LV_PCT(100));
     pnl_style(lgd, lv_color_hex(0x161B22));
     lv_obj_set_style_pad_all(lgd, 4, 0);
     lv_obj_set_style_pad_top(lgd, 8, 0);
@@ -149,17 +149,16 @@ void ui_create_main_screen(void)
 
     for (int i = 0; i < 7; i++) {
         lv_obj_t *it = lv_obj_create(lgd);
-        lv_obj_set_size(it, 28, 28);
+        lv_obj_set_size(it, 56, 30);
         lv_obj_set_style_bg_color(it, lv_color_hex(CLR[i]), 0);
         lv_obj_set_style_bg_opa(it, LV_OPA_20, 0);
-        lv_obj_set_style_radius(it, 14, 0);
+        lv_obj_set_style_radius(it, 15, 0);
         lv_obj_set_style_border_width(it, 2, 0);
         lv_obj_set_style_border_color(it, lv_color_hex(CLR[i]), 0);
         lv_obj_set_style_pad_all(it, 0, 0);
         lv_obj_t *lb = lv_label_create(it);
         lv_label_set_text(lb, CN[i]);
-        font_en(lb);
-        lv_obj_set_style_text_font(lb, &lv_font_montserrat_14, 0);
+        font_zh(lb);
         lv_obj_set_style_text_color(lb, lv_color_hex(CLR[i]), 0);
         lv_obj_center(lb);
     }

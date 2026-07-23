@@ -15,8 +15,8 @@
  *   1. WiFi 已连接
  *   2. llm_config_t cfg = { .base_url=LLM_BASE_DEEPSEEK, .api_key=…, .model=… };
  *   3. llm_init(&cfg)
- *   4. llm_set_emotion_context(class, conf)  // 每次情绪更新时调用
- *   5. llm_chat("你好", buf, sizeof(buf))
+ *   4. llm_set_emotion_provider(provider_cb)  // 注册情绪提供者回调
+ *   5. llm_chat("你好", buf, sizeof(buf))      // 每次自动带最新情绪
  *
  * 依赖: espressif/openai, FreeRTOS
  * ============================================================ */
@@ -48,11 +48,17 @@ esp_err_t llm_init(const llm_config_t *config);
 void      llm_deinit(void);
 
 /* ============================================================
- * 情绪上下文（核心增值功能）
+ * 情绪上下文 — Pull 模式（核心增值功能）
+ *
+ * 不再由 emotion_task 主动 push，改为在每次 chat 前
+ * 通过回调拉取最新情绪，保证单一数据源、零延迟。
  * ============================================================ */
 
-/** 注入当前识别到的情绪，自动更新系统提示词 */
-void llm_set_emotion_context(int emotion_class, float confidence);
+/** 情绪提供者回调：LLM 在每次 chat 前调用，获取最新情绪 */
+typedef void (*llm_emotion_provider_t)(int *emotion_class, float *confidence);
+
+/** 注册情绪提供者（传 NULL 取消情绪感知） */
+void llm_set_emotion_provider(llm_emotion_provider_t provider);
 
 /** 手动覆盖系统提示词（传 NULL 恢复默认情绪模板） */
 void llm_set_system_prompt(const char *prompt);
