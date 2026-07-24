@@ -27,6 +27,8 @@ static lv_obj_t *right_conf;
 static lv_obj_t *right_tip;
 static lv_obj_t *right_time;
 static lv_obj_t *monitor_btn;
+static lv_obj_t *s_monitor_screen;
+static lv_obj_t *s_back_btn;
 static bool s_monitoring = true;
 
 /* 情绪数据 */
@@ -96,9 +98,42 @@ lv_obj_t *ui_get_camera_container(void) { return camera_container; }
 
 void ui_create_main_screen(void)
 {
-    lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *scr = lv_obj_create(NULL);
+    s_monitor_screen = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x0D1117), 0);
+    lv_obj_set_style_pad_all(scr, 0, 0);
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
+
+    /* ========== 导航栏 ========== */
+    lv_obj_t *nav = lv_obj_create(scr);
+    lv_obj_set_size(nav, LV_PCT(100), 44);
+    lv_obj_set_style_bg_color(nav, lv_color_hex(0x161B22), 0);
+    lv_obj_set_style_border_width(nav, 0, 0);
+    lv_obj_set_style_radius(nav, 0, 0);
+    lv_obj_set_style_pad_hor(nav, 8, 0);
+    lv_obj_set_style_pad_ver(nav, 0, 0);
+    lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(nav, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    /* 返回按钮 */
+    s_back_btn = lv_btn_create(nav);
+    lv_obj_set_size(s_back_btn, 36, 36);
+    lv_obj_set_style_bg_color(s_back_btn, lv_color_hex(0x30363D), 0);
+    lv_obj_set_style_border_width(s_back_btn, 0, 0);
+    lv_obj_set_style_radius(s_back_btn, 8, 0);
+    lv_obj_set_style_shadow_width(s_back_btn, 0, 0);
+    lv_obj_add_event_cb(s_back_btn, btn_fx, LV_EVENT_ALL, NULL);
+    lv_obj_t *back_sym = lv_label_create(s_back_btn);
+    lv_label_set_text(back_sym, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(back_sym, lv_color_hex(0xC9D1D9), 0);
+    lv_obj_center(back_sym);
+
+    /* 标题 */
+    lv_obj_t *nav_title = lv_label_create(nav);
+    lv_label_set_text(nav_title, "情绪守护");
+    font_zh(nav_title);
+    lv_obj_set_style_text_color(nav_title, lv_color_hex(0x58A6FF), 0);
+    lv_obj_set_style_margin_left(nav_title, 12, 0);
 
     /* ========== 状态栏 ========== */
     lv_obj_t *sb = lv_obj_create(scr);
@@ -409,4 +444,12 @@ void ui_show_message(const char *title, const char *msg, uint32_t dur)
     if (dur > 0) message_timer = lv_timer_create(hide_msg, dur, NULL);
 }
 
-void ui_init(void) { ui_create_main_screen(); }
+lv_obj_t *ui_create_monitor_screen(void)
+{
+    ui_create_main_screen();
+    return s_monitor_screen;
+}
+void ui_monitor_set_back_callback(lv_event_cb_t cb)
+{
+    if (s_back_btn) lv_obj_add_event_cb(s_back_btn, cb, LV_EVENT_CLICKED, NULL);
+}

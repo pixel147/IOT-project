@@ -54,6 +54,19 @@ Camera → CSI V4L2 → 30fps RGB565
 └──────────────────────────────────────────┘
 ```
 
+### 多屏幕架构 (2026-07-24)
+
+项目改为 App 桌面风格，3 个 LVGL 独立 screen：
+
+```
+启动 → Home 屏幕 (lv_screen_load)
+         ├─ [📷 情绪监控] → Monitor 屏幕 (相机+人脸+情绪)
+         ├─ [✉ AI 聊天]  → 占位弹窗 "即将上线"
+         └─ [⚙ 设置]     → Settings 屏幕 (WiFi 扫描列表)
+```
+
+所有屏幕在 `app_main` 初始化阶段一次性创建，通过 `lv_screen_load()` 切换，不删除旧屏幕。相机/情绪任务常驻运行，仅在切屏时切换 UI 可见性。
+
 ## 关键文件
 
 | 文件 | 说明 |
@@ -61,6 +74,10 @@ Camera → CSI V4L2 → 30fps RGB565
 | `main/app_main.c` | 入口: 显示初始化, 三缓冲, 相机回调, 人脸检测, 情绪任务, 监控按钮控制 |
 | `main/ui/ui.c` | LVGL UI: 暗色主题, 三栏布局, 情绪徽章(左上角), 图例(左竖排), 信息面板(右), 建议栏 |
 | `main/ui/ui.h` | UI 公共 API (含 `ui_update_emotion()`, `ui_hide_emotion()`, `ui_is_monitoring()`) |
+| `main/ui/home.c` | **[NEW]** Home 屏幕: App 图标网格 (LV_SYMBOL + 色块), 点击切换 screen |
+| `main/ui/home.h` | Home 屏幕 API: `ui_home_create()`, `ui_home_set_icon_callback()` |
+| `main/ui/settings.c` | **[NEW]** Settings 屏幕: WiFi 扫描列表 (异步 FreeRTOS 任务 + LVGL 列表) |
+| `main/ui/settings.h` | Settings 屏幕 API: `ui_settings_create()`, `ui_settings_scan_wifi()` |
 | `main/ui_font_zh_22.c` | 22px 中文字体 (220 字, 由 `tools/generate_ui_font.py` 从 Deng.ttf 生成) |
 | `main/camera/camera.c` | CSI V4L2 摄像头驱动 (MIPI-CSI RGB565, MMAP 三缓冲) |
 | `main/sdcard/sdcard_init.cpp` | SDMMC 挂载到 `/sdcard` |
@@ -387,29 +404,57 @@ AI 任务(Core 0)和相机回调(Core 1)共享数据时必须:
 - `mnp_s8_v1.espdl`
 - `emotion_cnn_aug_int8.tflite`
 
-### WiFi / LLM 集成（已接入 ✅）
-WiFi + LLM 模块已完全接入 `app_main.c`。启动流程：
+### WiFi / LLM 集成
 
-```
-SD卡就绪 → WiFi连接(15s超时) → LLM初始化 → 启动建议任务
-```
+WiFi + LLM 模块代码已接入 `app_main.c`，UI 已就绪，但 **WiFi 扫描/连接功能不可用**。
 
-凭据配置在 `main/llm/secrets.h`（已加入 `.gitignore`）：
+#### 硬件约束
+
+ESP32-P4 芯片无原生 WiFi。本板通过 **ESP32-C6 协处理器** 提供 WiFi，C6 与 P4 之间使用 **SDIO** 通信（SDMMC Slot 1）。SD 卡使用 **SDMMC Slot 0**。两个 Slot 共享同一控制器。
+
+#### 当前状态
+
+WiFi 使用标准 `esp_wifi` API（`wifi.c`），该 API 在 P4 上无法直接驱动 C6。正确路径是使用 `espressif/esp_wifi_remote`（v0.13.*）+ `espressif/esp_hosted`（v2.11.*），已添加到 `main/idf_component.yml`。
+
+已完成的接入步骤：
+1. `idf_component.yml` 添加 `esp_wifi_remote` + `esp_hosted` 依赖
+2. `wifi.c` 在 `esp_wifi_init()` 前调用 `esp_wifi_remote_init(&cfg)`
+3. `sdkconfig` 添加 `CONFIG_ESP_WIFI_REMOTE_ENABLED=y` 等选项
+
+#### 当前症状
+
+启动日志中 `esp_wifi_remote_init` 仍然走弱函数桩（`esp_wifi_remote_weak: esp_wifi_remote_init unsupported`），`esp_hosted` 提供的真实 SDIO 实现未被链接。尝试 `esp_hosted_init()` 但因头文件路径不可达未成功。
+
+#### 下一步
+
+- 验证 C6 是否已烧录 `esp_hosted` slave 固件（出厂预烧或需手动烧录）
+- 确认 `esp_hosted` 组件在 Kconfig 正确配置后能否自动替换弱函数桩
+- 可参考 `host_sdcard_with_hosted` 官方例程了解 SDMMC 双 Slot 共存配置
+
+#### 凭据配置
+
+凭据以宏定义形式写在 `app_main.c` 顶部：
 ```c
-#define WIFI_SSID      "your_wifi_ssid"     // ← 填入真实 SSID
-#define WIFI_PASSWORD  "your_wifi_password" // ← 填入真实密码
-#define LLM_API_KEY    "sk-your-api-key"    // ← 填入真实 API Key
-#define LLM_BASE_URL   LLM_BASE_DEEPSEEK   // 服务商 Base URL
-#define LLM_MODEL_NAME LLM_MODEL_DEEPSEEK_CHAT
+#define WIFI_SSID       "your_wifi_ssid"
+#define WIFI_PASSWORD   "your_wifi_password"
+#define LLM_API_KEY     "sk-your-api-key"
+#define LLM_BASE_URL    LLM_BASE_DEEPSEEK
+#define LLM_MODEL_NAME  LLM_MODEL_DEEPSEEK_CHAT
 ```
 
 建议任务：`llm_suggestion_task` 每 30 秒调用大模型，生成情绪感知陪伴提示并更新 UI 建议栏。
 
 ## 已知问题
 
-- TFLite Micro INT8 延迟 ~130ms (可用但非最优)
+### 已修复
+- ~~TFLite Micro INT8 延迟 ~130ms~~ → 切换为 ESP-DL PER_TENSOR 模型 `emotion_cnn_aug_pt.espdl`，推理 <10ms
+- ~~SD 卡 LFN 禁用导致模型加载失败~~ → `CONFIG_FATFS_LFN_HEAP=y`
+- ~~`faces` 局部变量未初始化导致随机崩溃~~ → `= {0}` (2026-07-24)
+
+### 待解决
+- **WiFi 扫描不可用**: 见上方 "WiFi / LLM 集成"
 - 多人脸场景只处理第一张脸
-- WiFi/LLM 模块已接入 `app_main.c`，需编辑 `secrets.h` 填入凭据
 - `espressif/openai` 组件默认超时 60 秒 (在 `OpenAI_Request` 中硬编码)
 - Async LLM 请求仅支持单并发 (`s_ctx.busy` 标志)
 - 对话历史存储在 PSRAM，受 `MAX_HISTORY_SLOTS` (40条=20轮) 限制
+- ISP 色彩未经校准，相机画面偏绿（不影响功能）

@@ -40,6 +40,7 @@ static struct {
     uint8_t     *fb_psram;
     uint32_t     fb_len;
     volatile bool fb_ready;
+    bool         swap_bytes;   /* true when ISP outputs RGB565X (big-endian) */
 } s_cam = { .fd = -1, .fb_psram = NULL };
 
 static void log_fourcc(uint32_t fourcc)
@@ -123,6 +124,18 @@ static void cam_capture_task(void *arg)
             /* 从 DMA 缓冲区复制到稳定的 PSRAM 帧缓冲 */
             if (s_cam.fb_psram && bytes == frame_size && bytes <= s_cam.fb_len) {
                 memcpy(s_cam.fb_psram, src, bytes);
+
+                /* RGB565X (big-endian) → RGB565 (little-endian) 字节序转换。
+                 * ISP 在某些传感器模式下输出大端 RGB565，而 LVGL 和 ESP-DL
+                 * 均期望小端。若不转换，画面整体发绿（G 通道居中受字节序影响最小）。 */
+                if (s_cam.swap_bytes) {
+                    uint16_t *p = (uint16_t *)s_cam.fb_psram;
+                    uint32_t n = (bytes + 1) >> 1;
+                    for (uint32_t i = 0; i < n; i++) {
+                        p[i] = __builtin_bswap16(p[i]);
+                    }
+                }
+
                 s_cam.fb_ready = true;
                 if (s_cam.callback) {
                     s_cam.callback(s_cam.fb_psram, bytes,
@@ -214,6 +227,7 @@ esp_err_t cam_start(uint32_t width, uint32_t height, uint32_t fps, cam_frame_cb_
     s_cam.height = fmt.fmt.pix.height;
     s_cam.stride = fmt.fmt.pix.bytesperline ? fmt.fmt.pix.bytesperline : s_cam.width * 2;
     s_cam.pixel_format = fmt.fmt.pix.pixelformat;
+    s_cam.swap_bytes = (fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_RGB565X);
     frame_size = s_cam.stride * s_cam.height;
 
     /* 仅在确定协商格式后分配 PSRAM 帧缓冲 */

@@ -6,14 +6,22 @@
 #include "esp_cache.h"
 #include "esp_timer.h"
 #include "ui.h"
+#include "home.h"
+#include "settings.h"
 #include "sdcard_init.h"
 #include "face_detect_wrapper.hpp"
-#include "emotion_tflite.hpp"
+#include "emotion_espdl.hpp"
 #include "wifi.h"
 #include "llm_client.h"
-#include "secrets.h"
 
 #include <string.h>
+
+/* ---- 凭据配置 ---- */
+#define WIFI_SSID       "your_wifi_ssid"
+#define WIFI_PASSWORD   "your_wifi_password"
+#define LLM_API_KEY     "sk-your-api-key"
+#define LLM_BASE_URL    LLM_BASE_DEEPSEEK
+#define LLM_MODEL_NAME  LLM_MODEL_DEEPSEEK_CHAT
 
 static const char *TAG = "MAIN";
 
@@ -38,6 +46,53 @@ static uint32_t s_frame_w = 0, s_frame_h = 0, s_frame_stride = 0;
 static face_detect_results_t s_ai_faces;
 static int s_ai_classes[FACE_DETECT_MAX_FACES];
 static float s_ai_confs[FACE_DETECT_MAX_FACES];
+
+/* ---- 多屏幕管理 ---- */
+static lv_obj_t *s_home_scr = NULL;
+static lv_obj_t *s_monitor_scr = NULL;
+static lv_obj_t *s_settings_scr = NULL;
+
+static void on_icon_monitor(lv_event_t *e)
+{
+    (void)e;
+    if (lvgl_port_lock(-1)) {
+        lv_screen_load(s_monitor_scr);
+        lvgl_port_unlock();
+    }
+}
+static void on_icon_chat(lv_event_t *e)
+{
+    (void)e;
+    if (lvgl_port_lock(-1)) {
+        ui_show_message("即将上线", "AI 聊天功能正在开发中，敬请期待…", 3000);
+        lvgl_port_unlock();
+    }
+}
+static void on_icon_settings(lv_event_t *e)
+{
+    (void)e;
+    if (lvgl_port_lock(-1)) {
+        lv_screen_load(s_settings_scr);
+        ui_settings_scan_wifi();
+        lvgl_port_unlock();
+    }
+}
+static void on_monitor_back(lv_event_t *e)
+{
+    (void)e;
+    if (lvgl_port_lock(-1)) {
+        lv_screen_load(s_home_scr);
+        lvgl_port_unlock();
+    }
+}
+static void on_settings_back(lv_event_t *e)
+{
+    (void)e;
+    if (lvgl_port_lock(-1)) {
+        lv_screen_load(s_home_scr);
+        lvgl_port_unlock();
+    }
+}
 
 /* ---- 相机回调（拷贝帧 + 人脸检测 + 画框） ---- */
 static void on_camera_frame(const uint8_t *buf, uint32_t len,
@@ -67,7 +122,7 @@ static void on_camera_frame(const uint8_t *buf, uint32_t len,
             memcpy(s_fb_disp, s_fb_cap[ridx], stride * h);
 
             /* 人脸检测（直接在当前帧上做，与原始架构一致） */
-            face_detect_results_t faces;
+            face_detect_results_t faces = {0};
             face_detect_run((uint16_t *)s_fb_disp, w, h, &faces);
 
             /* 绘制人脸框（s_ai_classes 由 emotion_task 更新） */
@@ -133,7 +188,7 @@ static void emotion_task(void *arg)
 
         for (int i = 0; i < n_faces && i < FACE_DETECT_MAX_FACES; i++) {
             int64_t t0 = esp_timer_get_time();
-            emotion_tflite_run((const uint8_t *)roi_buf,
+            emotion_espdl_run((const uint8_t *)roi_buf,
                                s_frame_w, s_frame_h, s_frame_w * 2,
                                s_ai_faces.faces[i].x, s_ai_faces.faces[i].y,
                                s_ai_faces.faces[i].w, s_ai_faces.faces[i].h,
@@ -238,17 +293,36 @@ void app_main(void)
     }
 
     /* 初始化 canvas 指向显示缓冲（只设一次，后续直接 memcpy + invalidate） */
+
+    /* 3. 创建 Home + Monitor 屏幕，默认加载 Home */
+    lvgl_port_lock(-1);
+
+    /* Home */
+    s_home_scr = ui_home_create();
+    lv_screen_load(s_home_scr);
+
+    /* Monitor（先创建但不加载） */
+    s_monitor_scr = ui_create_monitor_screen();
+    lv_timer_create(fps_timer_cb, 1000, NULL);
+
+    /* Home 图标回调 */
+    ui_home_set_icon_callback(0, on_icon_monitor);
+    ui_home_set_icon_callback(1, on_icon_chat);
+    ui_home_set_icon_callback(2, on_icon_settings);
+
+    /* Monitor 返回 → Home */
+    ui_monitor_set_back_callback(on_monitor_back);
+
+    /* Settings 屏幕 */
+    s_settings_scr = ui_settings_create();
+    ui_settings_set_back_callback(on_settings_back);
+
+    /* 给 canvas 设初始缓冲 */
     if (s_fb_disp) {
         memset(s_fb_disp, 0, FRAME_BYTES);
         ui_update_camera_preview(s_fb_disp, CAM_WIDTH, CAM_HEIGHT, CAM_WIDTH * 2);
     }
 
-    /* 3. 初始化 UI */
-    lvgl_port_lock(-1);
-    ui_init();
-    ui_set_system_status("就绪");
-    ui_update_suggestion("系统已启动，等待功能接入…");
-    lv_timer_create(fps_timer_cb, 1000, NULL);
     lvgl_port_unlock();
 
     /* 4. 挂载 SD 卡 */
@@ -258,9 +332,8 @@ void app_main(void)
     lvgl_port_lock(-1);
     if (sd_ret == ESP_OK) {
         ui_set_system_status("SD 卡：已就绪");
-        /* 加载人脸检测 + 情绪识别模型 */
         face_detect_init();
-        emotion_tflite_load();
+        emotion_espdl_load();
     } else {
         ESP_LOGW(TAG, "SD card init failed");
         ui_set_system_status("SD 卡：失败");
@@ -271,7 +344,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Connecting WiFi to %s…", WIFI_SSID);
     wifi_connect(WIFI_SSID, WIFI_PASSWORD);
 
-    /* 6. 启动 MIPI-CSI 摄像头（不依赖 WiFi，优先初始化） */
+    /* 6. 启动 MIPI-CSI 摄像头 */
     esp_err_t cam_ret = ESP_ERR_NOT_SUPPORTED;
 #if CONFIG_IDF_TARGET_ESP32P4
     cam_ret = cam_start(CAM_WIDTH, CAM_HEIGHT, 30, on_camera_frame);

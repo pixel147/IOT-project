@@ -8,6 +8,7 @@
 #include "wifi.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
+#include "esp_wifi_remote.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
@@ -78,7 +79,9 @@ esp_err_t wifi_connect(const char *ssid, const char *password)
         ESP_ERROR_CHECK(esp_event_loop_create_default());
         s_netif = esp_netif_create_default_wifi_sta();
 
+        /* P4 无原生 WiFi，通过 SDIO 与 ESP32-C6 通信 */
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        esp_wifi_remote_init(&cfg);
         ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
         /* 事件组 */

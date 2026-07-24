@@ -93,8 +93,12 @@ void emotion_espdl_load(void)
 /* ============================================================
  * Preprocess: RGB565 face ROI -> 48x48 INT8 grayscale
  *
- * Model input: INT8 [-128..127], exponent=-7 (scale=1/128)
- * Mapping: pixel [0..255] -> gray -> gray - 128 -> [-128..127]  (零中心化, 满量程利用INT8)
+ * Model input: INT8, exponent=-7 (scale=1/128), normalized [0,1]
+ *   real = INT8 * 2^-7 = INT8 / 128
+ *
+ * Mapping:
+ *   gray [0,255] → normalized [0,1] → INT8 [0,127]
+ *   INT8 = (gray / 255) * 128 ≈ gray >> 1   (128/255 ≈ 0.502)
  * ============================================================ */
 static bool preprocess_roi(const uint8_t *rgb565,
                            int frame_w, int frame_h, int stride,
@@ -143,15 +147,15 @@ static bool preprocess_roi(const uint8_t *rgb565,
             int idx = src_x * 2;
             uint16_t px = row[idx] | ((uint16_t)row[idx + 1] << 8);
 
-            /* Grayscale: 0.299R + 0.587G + 0.114B (fixed-point) */
-            int r = (px >> 11) & 0x1F;
-            int g = (px >> 5)  & 0x3F;
-            int b =  px        & 0x1F;
-            int gray = (r * 77 + g * 150 + b * 29) >> 6;  /* [0..255] */
+            /* Grayscale: 0.299R + 0.587G + 0.114B (fixed-point, 8-bit expanded) */
+            int r = (px >> 11) & 0x1F; r = (r << 3) | (r >> 2);
+            int g = (px >> 5)  & 0x3F; g = (g << 2) | (g >> 4);
+            int b =  px        & 0x1F; b = (b << 3) | (b >> 2);
+            int gray = (r * 77 + g * 150 + b * 29) >> 8;  /* [0..255] */
 
-            /* Center at 0 for full INT8 range: gray [0,255] -> [-128, 127]
-             * With exponent=-7 (scale=1/128): real = int8 * 2^-7 = [-1.0, 0.992] */
-            dst[y * in_w + x] = (int8_t)(gray - 128);
+            /* Model: INT8, exponent=-7 (scale=1/128), normalized [0,1]
+             * INT8 = (gray / 255) * 128 ≈ gray >> 1  → [0, 127] */
+            dst[y * in_w + x] = (int8_t)(gray >> 1);
         }
     }
 
