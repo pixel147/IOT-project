@@ -1,4 +1,4 @@
-idf_component_register(SRCS "app_main.c" "ui/ui.c" "ui/home.c" "ui/settings.c" "ui_font_zh_22.c" "camera/camera.c"
+idf_component_register(SRCS "app_main.c" "ui/ui.c" "ui/home.c" "ui/settings.c" "ui/chat.c" "ui_font_zh_22.c" "camera/camera.c"
                        "sdcard/sdcard_init.cpp"
                        "model_loader/face_detect_wrapper.cpp"
                        "model_loader/emotion_espdl.cpp"

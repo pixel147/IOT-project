@@ -8,17 +8,19 @@
 #include "ui.h"
 #include "home.h"
 #include "settings.h"
+#include "chat.h"
 #include "sdcard_init.h"
 #include "face_detect_wrapper.hpp"
 #include "emotion_espdl.hpp"
 #include "wifi.h"
+#include "wifi_credentials.h"
 #include "llm_client.h"
 
 #include <string.h>
 
 /* ---- 凭据配置 ---- */
-#define WIFI_SSID       "your_wifi_ssid"
-#define WIFI_PASSWORD   "your_wifi_password"
+#define WIFI_SSID       APP_WIFI_SSID
+#define WIFI_PASSWORD   APP_WIFI_PASSWORD
 #define LLM_API_KEY     "sk-your-api-key"
 #define LLM_BASE_URL    LLM_BASE_DEEPSEEK
 #define LLM_MODEL_NAME  LLM_MODEL_DEEPSEEK_CHAT
@@ -46,11 +48,14 @@ static uint32_t s_frame_w = 0, s_frame_h = 0, s_frame_stride = 0;
 static face_detect_results_t s_ai_faces;
 static int s_ai_classes[FACE_DETECT_MAX_FACES];
 static float s_ai_confs[FACE_DETECT_MAX_FACES];
+static volatile int s_llm_emotion_class = 6;
+static volatile float s_llm_emotion_conf = 0.0f;
 
 /* ---- 多屏幕管理 ---- */
 static lv_obj_t *s_home_scr = NULL;
 static lv_obj_t *s_monitor_scr = NULL;
 static lv_obj_t *s_settings_scr = NULL;
+static lv_obj_t *s_chat_scr = NULL;
 
 static void on_icon_monitor(lv_event_t *e)
 {
@@ -64,7 +69,13 @@ static void on_icon_chat(lv_event_t *e)
 {
     (void)e;
     if (lvgl_port_lock(-1)) {
+        lv_screen_load(s_chat_scr);
+#if 0
         ui_show_message("即将上线", "AI 聊天功能正在开发中，敬请期待…", 3000);
+        lvgl_port_unlock();
+    }
+}
+#endif
         lvgl_port_unlock();
     }
 }
@@ -95,6 +106,15 @@ static void on_settings_back(lv_event_t *e)
 }
 
 /* ---- 相机回调（拷贝帧 + 人脸检测 + 画框） ---- */
+static void on_chat_back(lv_event_t *e)
+{
+    (void)e;
+    if (lvgl_port_lock(-1)) {
+        lv_screen_load(s_home_scr);
+        lvgl_port_unlock();
+    }
+}
+
 static void on_camera_frame(const uint8_t *buf, uint32_t len,
                             uint32_t w, uint32_t h, uint32_t stride, uint32_t fmt)
 {
@@ -196,6 +216,11 @@ static void emotion_task(void *arg)
             int64_t dt = esp_timer_get_time() - t0;
             ESP_LOGI("LAT", "emotion[%d]: %lld us  cls=%d conf=%.2f",
                      i, dt, s_ai_classes[i], s_ai_confs[i]);
+            if (i == 0) {
+                s_llm_emotion_conf = s_ai_confs[i];
+                __sync_synchronize();
+                s_llm_emotion_class = s_ai_classes[i];
+            }
         }
     }
 }
@@ -203,11 +228,14 @@ static void emotion_task(void *arg)
 /* ---- 情绪提供者回调（Pull 模式：LLM 每次 chat 前实时拉取） ---- */
 static void provide_emotion(int *cls, float *conf)
 {
-    *cls  = s_ai_classes[0];
-    *conf = s_ai_confs[0];
+    int emotion_class = s_llm_emotion_class;
+    __sync_synchronize();
+    *cls = emotion_class;
+    *conf = s_llm_emotion_conf;
 }
 
 /* ---- LLM 建议任务（每30秒生成陪伴提示） ---- */
+#if 0
 #define LLM_SUGGESTION_INTERVAL_MS 30000
 #define LLM_PROMPT_BUF_SIZE 256
 #define LLM_RESP_BUF_SIZE   512
@@ -252,6 +280,8 @@ static void llm_suggestion_task(void *arg)
 }
 
 /* ---- 主函数 ---- */
+#endif
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "Emotion + LLM Chat Terminal starting");
@@ -316,6 +346,9 @@ void app_main(void)
     /* Settings 屏幕 */
     s_settings_scr = ui_settings_create();
     ui_settings_set_back_callback(on_settings_back);
+
+    s_chat_scr = ui_chat_create();
+    ui_chat_set_back_callback(on_chat_back);
 
     /* 给 canvas 设初始缓冲 */
     if (s_fb_disp) {
@@ -392,5 +425,4 @@ void app_main(void)
     xTaskCreatePinnedToCore(emotion_task, "emotion", 16384, NULL, 3, NULL, 0);
 
     /* 9. 启动 LLM 建议任务（每30秒生成陪伴提示） */
-    xTaskCreatePinnedToCore(llm_suggestion_task, "llm_suggest", 12288, NULL, 2, NULL, 0);
 }
