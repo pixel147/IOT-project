@@ -1,8 +1,7 @@
 /* ============================================================
  * wifi.c — WiFi Station 实现
  *
- * 基于 ESP-IDF wifi station 例程，封装为简洁 API。
- * 使用 FreeRTOS 事件组同步连接状态。
+ * NVS 持久化凭据 + 非阻塞连接 + 状态回调。
  * ============================================================ */
 
 #include "wifi.h"
@@ -12,150 +11,217 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
-#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_timer.h"
 #include <string.h>
+#include <lwip/netdb.h>
+#include <lwip/sockets.h>
 
 static const char *TAG = "WIFI";
 
+#define NVS_NAMESPACE  "wifi_creds"
+#define NVS_KEY_SSID   "ssid"
+#define NVS_KEY_PASS   "password"
+
 /* ---- 内部状态 ---- */
-static esp_netif_t           *s_netif = NULL;
-static EventGroupHandle_t     s_evt   = NULL;
-static volatile bool          s_connected = false;
-static volatile bool          s_inited    = false;
+static esp_netif_t           *s_netif    = NULL;
+static EventGroupHandle_t     s_evt      = NULL;
+static SemaphoreHandle_t      s_mutex    = NULL;
+static volatile wifi_status_t s_status   = WIFI_STATUS_DISCONNECTED;
+static volatile bool          s_inited   = false;
+static wifi_status_cb_t       s_cb       = NULL;
+static char                   s_pending_ssid[34];  /* 33 + 1 extra to suppress trunc warning */
+static char                   s_pending_pass[66]; /* 65 + 1 extra */
+static volatile bool          s_auto_connect = false;  /* true → WIFI_EVENT_STA_START 后自动 connect */
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
+
+/* ---- 内部：更新状态并通知回调 ---- */
+static void set_status(wifi_status_t st)
+{
+    wifi_status_t old;
+    if (s_mutex) xSemaphoreTake(s_mutex, portMAX_DELAY);
+    old = s_status;
+    s_status = st;
+    if (s_mutex) xSemaphoreGive(s_mutex);
+
+    if (st != old && s_cb) {
+        s_cb(st);
+    }
+}
+
+/* ---- 内部：从 NVS 读取凭据 ---- */
+static bool load_creds(char *ssid, size_t ssid_sz,
+                       char *pass, size_t pass_sz)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
+
+    size_t len = ssid_sz;
+    esp_err_t r = nvs_get_str(h, NVS_KEY_SSID, ssid, &len);
+    if (r != ESP_OK) { nvs_close(h); return false; }
+
+    len = pass_sz;
+    r = nvs_get_str(h, NVS_KEY_PASS, pass, &len);
+    if (r != ESP_OK) pass[0] = '\0';  /* 开放网络 */
+
+    nvs_close(h);
+    return true;
+}
 
 /* ---- 事件回调 ---- */
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *event_data)
 {
-    (void)arg; (void)event_data;
+    (void)arg;
 
     if (base == WIFI_EVENT) {
         if (id == WIFI_EVENT_STA_START) {
-            esp_wifi_connect();
+            if (s_auto_connect) {
+                ESP_LOGI(TAG, "STA started — connecting…");
+                set_status(WIFI_STATUS_CONNECTING);
+                esp_wifi_connect();
+            } else {
+                ESP_LOGI(TAG, "STA started — idle (scan-only mode)");
+            }
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             wifi_event_sta_disconnected_t *d =
                 (wifi_event_sta_disconnected_t *)event_data;
             ESP_LOGW(TAG, "Disconnected (reason=%d), reconnecting…", d->reason);
-            s_connected = false;
+            set_status(WIFI_STATUS_DISCONNECTED);
             esp_wifi_connect();
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&ev->ip_info.ip));
-        s_connected = true;
+        set_status(WIFI_STATUS_CONNECTED);
         if (s_evt) xEventGroupSetBits(s_evt, WIFI_CONNECTED_BIT);
     }
 }
 
-/* ---- 公共 API ---- */
-
-esp_err_t wifi_connect(const char *ssid, const char *password)
+/* ---- 内部：应用 WiFi 配置并启动 ---- */
+static esp_err_t apply_and_start(const char *ssid, const char *password)
 {
-    if (s_connected) {
-        ESP_LOGI(TAG, "Already connected");
-        return ESP_OK;
-    }
+    wifi_config_t cfg = {0};
+    /* Use bounded memcpy: ESP-IDF's sta.ssid/password are fixed max 32/64 byte arrays.
+     * strncpy triggers -Wstringop-truncation when src length equals dst size. */
+    size_t n = strlen(ssid);
+    if (n >= sizeof(cfg.sta.ssid)) n = sizeof(cfg.sta.ssid) - 1;
+    memcpy(cfg.sta.ssid, ssid, n);
+    cfg.sta.ssid[n] = '\0';
 
-    if (!ssid || strlen(ssid) == 0) {
-        ESP_LOGE(TAG, "SSID required");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    /* ---- 一次性初始化（幂等） ---- */
-    if (!s_inited) {
-        esp_err_t ret = nvs_flash_init();
-        if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-            ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            nvs_flash_erase();
-            nvs_flash_init();
-        }
-
-        ESP_ERROR_CHECK(esp_netif_init());
-        ESP_ERROR_CHECK(esp_event_loop_create_default());
-        s_netif = esp_netif_create_default_wifi_sta();
-
-        /* ESP-Hosted 在启动时通过 SDIO 连接板载 ESP32-C6。
-         * 启用 esp_wifi_remote 后，esp_wifi_init() 自动转发到远端 Wi-Fi API。 */
-        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-        ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "ESP-Hosted Wi-Fi init failed");
-
-        /* 事件组 */
-        s_evt = xEventGroupCreate();
-        if (!s_evt) return ESP_ERR_NO_MEM;
-
-        ESP_ERROR_CHECK(esp_event_handler_instance_register(
-            WIFI_EVENT, ESP_EVENT_ANY_ID,
-            wifi_event_handler, NULL, NULL));
-        ESP_ERROR_CHECK(esp_event_handler_instance_register(
-            IP_EVENT, IP_EVENT_STA_GOT_IP,
-            wifi_event_handler, NULL, NULL));
-
-        s_inited = true;
-    } else {
-        /* 非首次调用：重置事件组比特位 */
-        xEventGroupClearBits(s_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
-    }
-
-    /* ---- 配置 WiFi ---- */
-    wifi_config_t wifi_cfg = {0};
-    strncpy((char *)wifi_cfg.sta.ssid, ssid, sizeof(wifi_cfg.sta.ssid) - 1);
     if (password && password[0]) {
-        strncpy((char *)wifi_cfg.sta.password, password,
-                sizeof(wifi_cfg.sta.password) - 1);
+        n = strlen(password);
+        if (n >= sizeof(cfg.sta.password)) n = sizeof(cfg.sta.password) - 1;
+        memcpy(cfg.sta.password, password, n);
+        cfg.sta.password[n] = '\0';
     }
-    wifi_cfg.sta.threshold.authmode = password && password[0]
+    cfg.sta.threshold.authmode = (password && password[0])
         ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-    wifi_cfg.sta.pmf_cfg.capable = true;
-    wifi_cfg.sta.pmf_cfg.required = false;
+    cfg.sta.pmf_cfg.capable  = true;
+    cfg.sta.pmf_cfg.required = false;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    /* 先停再配再启，确保换网时干净切换 */
+    esp_wifi_stop();
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "set mode");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &cfg), TAG, "set config");
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
 
     ESP_LOGI(TAG, "Connecting to %s…", ssid);
     return ESP_OK;
 }
 
-esp_err_t wifi_wait_connected(uint32_t timeout_ms)
+/* ============================================================
+ * 公共 API
+ * ============================================================ */
+
+esp_err_t wifi_init(void)
 {
-    if (s_connected) return ESP_OK;
-    if (!s_evt)   return ESP_ERR_INVALID_STATE;
+    if (s_inited) return ESP_OK;
 
-    TickType_t ticks = (timeout_ms == 0)
-        ? portMAX_DELAY
-        : pdMS_TO_TICKS(timeout_ms);
-
-    EventBits_t bits = xEventGroupWaitBits(
-        s_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-        pdFALSE, pdFALSE, ticks);
-
-    if (bits & WIFI_CONNECTED_BIT) return ESP_OK;
-    return ESP_ERR_TIMEOUT;
-}
-
-bool wifi_is_connected(void)
-{
-    return s_connected;
-}
-
-esp_err_t wifi_get_ip(char *buf, size_t size)
-{
-    if (!s_connected || !s_netif || !buf || size < 8) {
-        return ESP_ERR_INVALID_STATE;
+    /* NVS */
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+        ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
     }
 
-    esp_netif_ip_info_t ip_info;
-    if (esp_netif_get_ip_info(s_netif, &ip_info) != ESP_OK) {
-        return ESP_ERR_INVALID_STATE;
-    }
+    /* 网络栈 */
+    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "netif init");
+    ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "event loop");
+    s_netif = esp_netif_create_default_wifi_sta();
 
-    snprintf(buf, size, IPSTR, IP2STR(&ip_info.ip));
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "wifi init");
+
+    /* 事件 */
+    ESP_RETURN_ON_ERROR(
+        esp_event_handler_instance_register(
+            WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL, NULL),
+        TAG, "wifi event register");
+    ESP_RETURN_ON_ERROR(
+        esp_event_handler_instance_register(
+            IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL, NULL),
+        TAG, "ip event register");
+
+    /* 同步对象 */
+    s_evt   = xEventGroupCreate();
+    s_mutex = xSemaphoreCreateMutex();
+    if (!s_evt || !s_mutex) return ESP_ERR_NO_MEM;
+
+    /* 启动 STA 模式（不连接，仅开启无线电以支持扫描） */
+    s_auto_connect = false;
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "set mode");
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
+
+    s_inited = true;
+    ESP_LOGI(TAG, "Stack initialized (STA idle, scan-ready)");
     return ESP_OK;
+}
+
+esp_err_t wifi_connect(const char *ssid, const char *password)
+{
+    if (!s_inited) {
+        ESP_LOGE(TAG, "Call wifi_init() first");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* NULL ssid → 从 NVS 加载 */
+    char buf_ssid[33], buf_pass[65];
+    if (!ssid) {
+        if (!load_creds(buf_ssid, sizeof(buf_ssid),
+                        buf_pass, sizeof(buf_pass))) {
+            ESP_LOGI(TAG, "No saved credentials — skipping auto-connect");
+            return ESP_OK;   /* 不是错误，只是尚无凭据 */
+        }
+        ssid     = buf_ssid;
+        password = buf_pass;
+        ESP_LOGI(TAG, "Auto-connecting with saved credentials: %s", ssid);
+    }
+
+    if (!password) password = "";
+
+    /* 保存到 pending（供连接成功后自动 save） */
+    size_t n = strlen(ssid);
+    if (n >= sizeof(s_pending_ssid)) n = sizeof(s_pending_ssid) - 1;
+    memcpy(s_pending_ssid, ssid, n);
+    s_pending_ssid[n] = '\0';
+
+    n = strlen(password);
+    if (n >= sizeof(s_pending_pass)) n = sizeof(s_pending_pass) - 1;
+    memcpy(s_pending_pass, password, n);
+    s_pending_pass[n] = '\0';
+
+    /* 清除之前的失败位 + 启用自动连接 */
+    s_auto_connect = true;
+    if (s_evt) xEventGroupClearBits(s_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+
+    return apply_and_start(ssid, password);
 }
 
 void wifi_disconnect(void)
@@ -164,5 +230,122 @@ void wifi_disconnect(void)
     ESP_LOGI(TAG, "Disconnecting…");
     esp_wifi_disconnect();
     esp_wifi_stop();
-    s_connected = false;
+    set_status(WIFI_STATUS_DISCONNECTED);
+}
+
+/* ---- 状态查询 ---- */
+
+wifi_status_t wifi_get_status(void)
+{
+    wifi_status_t st;
+    if (s_mutex) xSemaphoreTake(s_mutex, portMAX_DELAY);
+    st = s_status;
+    if (s_mutex) xSemaphoreGive(s_mutex);
+    return st;
+}
+
+bool wifi_is_connected(void)
+{
+    return wifi_get_status() == WIFI_STATUS_CONNECTED;
+}
+
+esp_err_t wifi_get_ip(char *buf, size_t size)
+{
+    if (!s_netif || !buf || size < 8) return ESP_ERR_INVALID_ARG;
+
+    esp_netif_ip_info_t ip;
+    if (esp_netif_get_ip_info(s_netif, &ip) != ESP_OK)
+        return ESP_ERR_INVALID_STATE;
+
+    snprintf(buf, size, IPSTR, IP2STR(&ip.ip));
+    return ESP_OK;
+}
+
+void wifi_set_status_callback(wifi_status_cb_t cb)
+{
+    if (s_mutex) xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_cb = cb;
+    if (s_mutex) xSemaphoreGive(s_mutex);
+}
+
+/* ---- NVS 凭据 ---- */
+
+esp_err_t wifi_save_credentials(const char *ssid, const char *password)
+{
+    if (!ssid || !ssid[0]) return ESP_ERR_INVALID_ARG;
+    if (!password) password = "";
+
+    nvs_handle_t h;
+    ESP_RETURN_ON_ERROR(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h),
+                        TAG, "nvs_open");
+    ESP_RETURN_ON_ERROR(nvs_set_str(h, NVS_KEY_SSID, ssid), TAG, "set ssid");
+    esp_err_t r = nvs_set_str(h, NVS_KEY_PASS, password);
+    if (r == ESP_OK) r = nvs_commit(h);
+    nvs_close(h);
+
+    if (r == ESP_OK)
+        ESP_LOGI(TAG, "Credentials saved: %s", ssid);
+    return r;
+}
+
+bool wifi_has_saved_credentials(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t len = 1;
+    bool ok = (nvs_get_str(h, NVS_KEY_SSID, NULL, &len) == ESP_OK);
+    nvs_close(h);
+    return ok;
+}
+
+esp_err_t wifi_get_saved_ssid(char *buf, size_t size)
+{
+    if (!buf || size == 0) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t h;
+    ESP_RETURN_ON_ERROR(nvs_open(NVS_NAMESPACE, NVS_READONLY, &h),
+                        TAG, "nvs_open");
+    esp_err_t r = nvs_get_str(h, NVS_KEY_SSID, buf, &size);
+    nvs_close(h);
+    return r;
+}
+
+esp_err_t wifi_clear_credentials(void)
+{
+    nvs_handle_t h;
+    ESP_RETURN_ON_ERROR(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h),
+                        TAG, "nvs_open");
+    ESP_RETURN_ON_ERROR(nvs_erase_key(h, NVS_KEY_SSID), TAG, "erase ssid");
+    nvs_erase_key(h, NVS_KEY_PASS);  /* 忽略：可能本就不存在 */
+    esp_err_t r = nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "Credentials cleared");
+    return r;
+}
+
+/* ---- 网络连通性测试（DNS 解析 bilibili.com） ---- */
+
+esp_err_t wifi_ping_test(int *latency_ms)
+{
+    if (wifi_is_connected() == false) return ESP_ERR_INVALID_STATE;
+
+    int64_t t0 = esp_timer_get_time();
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *res = NULL;
+    int rc = getaddrinfo("bilibili.com", NULL, &hints, &res);
+    int64_t dt = esp_timer_get_time() - t0;
+
+    if (latency_ms) *latency_ms = (int)(dt / 1000);
+
+    if (rc == 0 && res) {
+        char ip[16];
+        struct sockaddr_in *addr = (struct sockaddr_in *)res->ai_addr;
+        inet_ntoa_r(addr->sin_addr, ip, sizeof(ip));
+        ESP_LOGI(TAG, "Ping bilibili.com → %s (%lld ms)", ip, dt / 1000);
+        freeaddrinfo(res);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "Ping bilibili.com failed: rc=%d", rc);
+    if (res) freeaddrinfo(res);
+    return ESP_FAIL;
 }

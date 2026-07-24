@@ -8,8 +8,9 @@ OUTPUT_C = Path(__file__).parents[1] / "main" / "ui_font_zh_22.c"
 OUTPUT_H = Path(__file__).parents[1] / "main" / "ui_font_zh_22.h"
 FONT_SIZE = 22
 
-# 字库 — 情绪守护 + 聊天项目专用，删除旧姿态检测无关字符。
+# 字库 — 情绪守护 + 聊天项目专用。
 TEXT = (
+    # 原有 UI 字库 (精简)
     "情绪守护生气厌恶害怕开心难过惊讶平静脸检测置信度"
     "摄像头启动中实时状态等待模型接入开始停止提示已连接失败"
     "未检测到系统就绪设置"
@@ -18,14 +19,31 @@ TEXT = (
     "图例心情统计今日周趋势对话记录无"
     "训练次数分钟"
     "享受此刻宁静想点开心的事别怕你很安全保持好心情"
-    "试着放宽心吧哇真惊喜已经暂停开启监控"
-    "余元公冷别制剩受叠右号名呢哇回填士大子宁安容宽"
+    "试着放宽心吧哇真惊喜已暂停开启监控"
     "射小局居布很息想所排控文映暂有机标栏此滚点用监"
     "相真着竖章素线自色行览角试调贴长间隔面预题"
-    "满靠近编编号一上下主位侧内占左底据板由距部顶徽称能挂卡"
+    "满靠近编编号上下主位侧内占左底据板由距部顶徽称能挂卡"
     "，。：；（）-+/%~—…"
+    # WiFi 设置 + 聊天 UI
+    "扫描输入密码忘记正发现个存不足配置断开初始始终聊"
+    "搜索中请稍候已保存信号强弱点击选择"
+    "消息发送您助手历史清除正在思考就绪"
+    # 高频字（自动精选，总量=510 chars）
+    "的了不在人有个上们来到时为子中以下自可年过能会对多"
+    "学去天都成看小所前力没还问把从样些机又意只主话因法"
+    "实全定度间本相两最等进此其道各心原种重三事与者长开"
+    "动日但水部而分加月手内电生身被好正向平它车老系入提"
+    "题文花程受门及西利海图报再真强别记任解特代光即步风"
+    "活叫且干接往立指流安拉王今元目做万太边研计带完传处"
+    "类马清改管根确观节专江据务界速具千装志难区取交九应"
+    "放论品书张委争单毛非影走除决广算容准什素党红深号世"
+    "优字查该消读近周约支思备验划按随察玩跟觉段富念片八"
+    "母阿欢歌息忘婚姻庆希厨厅窗汽医累旅夜灯阳星湖草"
+    "树狗咬热闹宁静温幽聪早急缓软硬香"
+    # 标点符号
+    "、！？《》【】～"
 )
-ASCII = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+ASCII = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!\"',.:;?"
 
 
 def c_array(values, per_line=16):
@@ -42,7 +60,7 @@ def render_glyph(font, char):
     image = Image.new("L", (width, height), 0)
     ImageDraw.Draw(image).text((-left, -top), char, font=font, fill=255, anchor="ls")
 
-    pixels = list(image.getdata())
+    pixels = list(image.get_flattened_data())
     bitmap = []
     for index in range(0, len(pixels), 2):
         high = min(15, (pixels[index] + 8) // 17)

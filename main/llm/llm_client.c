@@ -56,9 +56,9 @@ static const char *DEFAULT_SYSTEM_PROMPT =
  * 内部常量
  * ============================================================ */
 
-#define MAX_RESPONSE      4096     /* 回复缓冲                                   */
+#define MAX_RESPONSE      4096     /* 回复缓冲（堆分配）                            */
 #define MAX_SYS_PROMPT    1536     /* 系统提示词缓冲（含情绪注入）                    */
-#define ASYNC_STACK       8192     /* 异步任务栈                                  */
+#define ASYNC_STACK       16384    /* 异步任务栈（HTTPS+TLS+OpenAI 需要较大栈） */
 #define ASYNC_PRIO        2        /* 异步任务优先级                                */
 
 /* ---- 异步请求上下文 ---- */
@@ -95,6 +95,11 @@ static struct {
 
     /* 异步 */
     volatile bool busy;
+
+    /* 上次情绪（供 UI 查询当前 AI 情绪上下文） */
+    int   last_emotion_class;
+    float last_emotion_conf;
+    bool  last_emotion_valid;
 } s_ctx;
 
 static inline void lock(void)   { if (s_ctx.mutex) xSemaphoreTake(s_ctx.mutex, portMAX_DELAY); }
@@ -122,6 +127,10 @@ static void rebuild_system_prompt(void)
     }
 
     if (has) {
+        s_ctx.last_emotion_class = cls;
+        s_ctx.last_emotion_conf  = conf;
+        s_ctx.last_emotion_valid = true;
+
         int pct = (int)(conf * 100.0f + 0.5f);
         if (pct > 100) pct = 100;
         snprintf(s_ctx.sys_buf, sizeof(s_ctx.sys_buf),
@@ -131,6 +140,7 @@ static void rebuild_system_prompt(void)
                  pct,
                  LLM_EMOTION_PROMPTS[cls]);
     } else {
+        s_ctx.last_emotion_valid = false;
         strncpy(s_ctx.sys_buf, base, sizeof(s_ctx.sys_buf) - 1);
         s_ctx.sys_buf[sizeof(s_ctx.sys_buf) - 1] = '\0';
     }
@@ -342,15 +352,27 @@ static void async_task(void *arg)
 {
     async_ctx_t *ctx = (async_ctx_t *)arg;
 
-    char resp[MAX_RESPONSE];
+    /* 堆分配响应缓冲（避免 4KB 占满 8KB 栈） */
+    char *resp = (char *)malloc(MAX_RESPONSE);
+    if (!resp) {
+        if (ctx->cb) ctx->cb(NULL, false, 0, ctx->user_data);
+        free(ctx->message);
+        free(ctx);
+        lock(); s_ctx.busy = false; unlock();
+        vTaskDelete(NULL);
+        return;
+    }
+    resp[0] = '\0';
+
     int http_code = 0;
-    esp_err_t ret = llm_chat_ex(ctx->message, resp, sizeof(resp), &http_code);
+    esp_err_t ret = llm_chat_ex(ctx->message, resp, MAX_RESPONSE, &http_code);
 
     if (ctx->cb) {
         ctx->cb((ret == ESP_OK) ? resp : NULL,
                 (ret == ESP_OK), http_code, ctx->user_data);
     }
 
+    free(resp);
     free(ctx->message);
     free(ctx);
 
@@ -358,6 +380,7 @@ static void async_task(void *arg)
     s_ctx.busy = false;
     unlock();
 
+    vTaskDelay(1);  /* 让 IDLE 任务有机会运行 */
     vTaskDelete(NULL);
 }
 
@@ -420,6 +443,20 @@ int llm_get_turn_count(void)
     int n = s_ctx.turn_count;
     unlock();
     return n;
+}
+
+/* ---- 情绪查询 ---- */
+
+bool llm_get_last_emotion(int *cls, float *conf)
+{
+    lock();
+    bool valid = s_ctx.last_emotion_valid;
+    if (valid) {
+        if (cls)  *cls  = s_ctx.last_emotion_class;
+        if (conf) *conf = s_ctx.last_emotion_conf;
+    }
+    unlock();
+    return valid;
 }
 
 /* ---- 状态 ---- */

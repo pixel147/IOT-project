@@ -98,6 +98,14 @@ int  llm_get_turn_count(void);
 
 bool llm_is_busy(void);
 
+/* ============================================================
+ * 情绪查询（供 UI 显示当前 AI 情绪上下文）
+ * ============================================================ */
+
+/** 获取 LLM 最后一次使用的情绪（每次 chat 前 rebuild 时更新）。
+ *  返回 true 表示有效，false 表示尚未获取或 provider 未注册。 */
+bool llm_get_last_emotion(int *cls, float *conf);
+
 #ifdef __cplusplus
 }
 #endif

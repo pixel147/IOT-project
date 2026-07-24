@@ -15,6 +15,36 @@ static lv_obj_t *s_send_btn;
 static lv_obj_t *s_clear_btn;
 static lv_obj_t *s_status;
 static lv_obj_t *s_back_btn;
+static lv_obj_t *s_emo_badge;
+static lv_obj_t *s_emo_label;
+
+/* 情绪配色（与 ui.c 一致） */
+static const uint32_t EMO_COLORS[7] = {
+    0xE53935, 0x2E7D32, 0x1565C0, 0x43A047, 0xE53935, 0xFDD835, 0x78909C
+};
+static const char *EMO_NAMES[7] = {
+    "生气", "厌恶", "害怕", "开心", "难过", "惊讶", "平静"
+};
+
+/* 更新情绪徽章（每次发消息前调用） */
+static void update_emotion_badge(void)
+{
+    int cls;
+    float conf;
+    if (!s_emo_badge || !s_emo_label) return;
+
+    if (llm_get_last_emotion(&cls, &conf)) {
+        int pct = (int)(conf * 100.0f + 0.5f);
+        if (pct > 100) pct = 100;
+        if (cls < 0) cls = 0; else if (cls > 6) cls = 6;
+
+        lv_label_set_text_fmt(s_emo_label, "%s %d%%", EMO_NAMES[cls], pct);
+        lv_obj_set_style_bg_color(s_emo_badge, lv_color_hex(EMO_COLORS[cls]), 0);
+        lv_obj_clear_flag(s_emo_badge, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_emo_badge, LV_OBJ_FLAG_HIDDEN);
+    }
+}
 
 static void set_font(lv_obj_t *obj)
 {
@@ -85,6 +115,7 @@ static void send_message(void)
 static void on_send(lv_event_t *event)
 {
     (void)event;
+    update_emotion_badge();  /* 发消息前刷新情绪，让用户看到 AI 将基于什么情绪回复 */
     send_message();
 }
 
@@ -153,10 +184,34 @@ lv_obj_t *ui_chat_create(void)
     s_back_btn = icon_button(nav, LV_SYMBOL_LEFT);
 
     lv_obj_t *title = lv_label_create(nav);
-    lv_label_set_text(title, "AI Chat");
+    lv_label_set_text(title, "AI 聊天");
     set_font(title);
     lv_obj_set_style_text_color(title, lv_color_hex(0x58A6FF), 0);
     lv_obj_set_style_margin_left(title, 12, 0);
+
+    /* 情绪徽章：显示 AI 当前感知到的情绪 */
+    s_emo_badge = lv_obj_create(nav);
+    lv_obj_set_size(s_emo_badge, LV_SIZE_CONTENT, 26);
+    lv_obj_set_style_bg_color(s_emo_badge, lv_color_hex(0x78909C), 0);
+    lv_obj_set_style_bg_opa(s_emo_badge, LV_OPA_30, 0);
+    lv_obj_set_style_radius(s_emo_badge, 13, 0);
+    lv_obj_set_style_border_width(s_emo_badge, 1, 0);
+    lv_obj_set_style_border_color(s_emo_badge, lv_color_hex(0x78909C), 0);
+    lv_obj_set_style_pad_hor(s_emo_badge, 8, 0);
+    lv_obj_set_style_margin_left(s_emo_badge, 8, 0);
+    lv_obj_add_flag(s_emo_badge, LV_OBJ_FLAG_HIDDEN);
+    s_emo_label = lv_label_create(s_emo_badge);
+    lv_label_set_text(s_emo_label, "平静 92%");
+    set_font(s_emo_label);
+    lv_obj_set_style_text_color(s_emo_label, lv_color_white(), 0);
+    lv_obj_center(s_emo_label);
+
+    /* 占位弹簧：把清空按钮推到右边 */
+    lv_obj_t *nav_spacer = lv_obj_create(nav);
+    lv_obj_set_size(nav_spacer, 1, 1);
+    lv_obj_set_flex_grow(nav_spacer, 1);
+    lv_obj_set_style_bg_opa(nav_spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(nav_spacer, 0, 0);
 
     s_clear_btn = icon_button(nav, LV_SYMBOL_TRASH);
     lv_obj_add_event_cb(s_clear_btn, on_clear, LV_EVENT_CLICKED, NULL);
@@ -221,4 +276,18 @@ lv_obj_t *ui_chat_create(void)
 void ui_chat_set_back_callback(lv_event_cb_t cb)
 {
     if (s_back_btn) lv_obj_add_event_cb(s_back_btn, cb, LV_EVENT_CLICKED, NULL);
+}
+
+/* 从摄像头回调更新情绪徽章（实时反映检测到的情绪） */
+void ui_chat_update_emotion(int cls, float conf)
+{
+    if (!s_emo_badge || !s_emo_label) return;
+    if (cls < 0 || cls > 6) { lv_obj_add_flag(s_emo_badge, LV_OBJ_FLAG_HIDDEN); return; }
+
+    int pct = (int)(conf * 100.0f + 0.5f);
+    if (pct > 100) pct = 100;
+
+    lv_label_set_text_fmt(s_emo_label, "%s %d%%", EMO_NAMES[cls], pct);
+    lv_obj_set_style_bg_color(s_emo_badge, lv_color_hex(EMO_COLORS[cls]), 0);
+    lv_obj_clear_flag(s_emo_badge, LV_OBJ_FLAG_HIDDEN);
 }

@@ -50,20 +50,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.2.4
-  espressif/esp-tflite-micro:
-    component_hash: 22fc501ab0b1bd39377048d608e6fce0e7b55cd07d244cbf41044b24d9b7db2e
-    dependencies:
-    - name: espressif/esp-nn
-      registry_url: https://components.espressif.com
-      require: private
-      version: '>=1.1.1'
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.3.7
   espressif/esp32_p4_function_ev_board:
     component_hash: e52edf61c2c53729ded4eabf166427d2b8cf5799b09bd4aa823a89327e429f4d
     dependencies:
@@ -244,7 +230,7 @@ dependencies:
       type: service
     version: 1.2.1
   espressif/esp_lcd_touch_gt911:
-    component_hash: 6029febef66eefd0910d527d7f30292779ccbf22a8dedd2bd69466acf0068a7b
+    component_hash: 07f678e4202d79bbad917805dcec4134ff08344177720f32ec4898267ad9e394
     dependencies:
     - name: espressif/esp_lcd_touch
       registry_url: https://components.espressif.com
@@ -256,7 +242,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.2.0~2
+    version: 1.2.0~3
   espressif/esp_lvgl_port:
     component_hash: fb6c1fdfe70d4ca39a035d63ca394a35f17ec84ce16ff98ecb13a54155d75da4
     dependencies:
@@ -405,11 +391,10 @@ dependencies:
 direct_dependencies:
 - espressif/esp-dl
 - espressif/esp-nn
-- espressif/esp-tflite-micro
 - espressif/esp32_p4_function_ev_board
 - espressif/esp_hosted
 - espressif/esp_wifi_remote
 - espressif/openai
-manifest_hash: 28b9b1e3047de53aa3595e0dd65b9d85267b0acbc4173da306be0555fea299b4
+manifest_hash: 41ec428bf4f72494e51b9aceaeb908b8962403c5af04c3f654c4451af72a9b62
 target: esp32p4
 version: 2.0.0

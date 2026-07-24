@@ -142,6 +142,8 @@ static void cam_capture_task(void *arg)
                                    s_cam.width, s_cam.height, s_cam.stride,
                                    s_cam.pixel_format);
                 }
+                /* 人脸检测在回调里占 ~26ms，让出 CPU 避免 TWDT 超时 */
+                taskYIELD();
             }
         }
 
