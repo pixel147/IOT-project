@@ -69,6 +69,7 @@ struct VoiceState {
     char device_id[18] = {};
     std::atomic<bool> manual_start_requested{false};
     std::atomic<bool> ota_done{false};
+    std::atomic<bool> hello_sent{false};
     int post_wake_skip = 0;
     bool listening = false;
     int silence_frames = 0;
@@ -213,12 +214,15 @@ static void mqtt_event_handler(void *arg, esp_event_base_t, int32_t event_id, vo
         ESP_LOGI(TAG, "MQTT disconnected");
         s_voice.listening = false;
         s_voice.session_id[0] = '\0';
+        s_voice.hello_sent = false;
         ui_chat_voice_set_status("Voice: disconnected");
 
     } else if (event_id == MQTT_EVENT_ERROR) {
         ESP_LOGW(TAG, "MQTT error");
 
     } else if (event_id == MQTT_EVENT_DATA) {
+        /* Ignore messages received before we send hello (server may push stale data) */
+        if (!s_voice.hello_sent) return;
         std::string topic(e.topic, e.topic_len);
         std::string payload(e.data, e.data_len);
         ESP_LOGD(TAG, "MQTT data on %s: %.*s", topic.c_str(), (int)payload.size(), payload.c_str());
@@ -347,10 +351,10 @@ static bool open_audio_channel(void)
         return false;
     }
 
-    /* Need a small delay for MQTT subscribe to complete before publishing */
-    vTaskDelay(pdMS_TO_TICKS(500));
+    /* Short settle before hello */
+    vTaskDelay(pdMS_TO_TICKS(200));
 
-    /* Send hello via MQTT with transport:udp to request UDP audio channel */
+    /* Send hello via MQTT (broker auto-routes response to our client_id) */
     char hello[512];
     snprintf(hello, sizeof(hello),
              "{\"type\":\"hello\",\"version\":3,\"transport\":\"udp\","
@@ -358,15 +362,7 @@ static bool open_audio_channel(void)
              "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":16000,"
              "\"channels\":1,\"frame_duration\":60}}");
     send_text(hello);
-
-    /* Subscribe to receive server responses */
-    char sub_topic[96];
-    snprintf(sub_topic, sizeof(sub_topic), "GID_test@@@%s", s_voice.device_id);
-    esp_mqtt_client_subscribe(s_voice.mqtt, sub_topic, 0);
-    if (s_voice.mqtt_publish_topic[0]) {
-        esp_mqtt_client_subscribe(s_voice.mqtt, s_voice.mqtt_publish_topic, 0);
-    }
-    vTaskDelay(pdMS_TO_TICKS(300));
+    s_voice.hello_sent = true;  /* Gate: only process server msgs after hello */
 
     /* Wait for server hello with UDP config */
     bits = xEventGroupWaitBits(s_voice.events, kServerHello, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
