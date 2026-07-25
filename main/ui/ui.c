@@ -106,21 +106,24 @@ void ui_create_main_screen(void)
 
     /* ========== 导航栏 ========== */
     lv_obj_t *nav = lv_obj_create(scr);
-    lv_obj_set_size(nav, LV_PCT(100), 44);
+    lv_obj_set_size(nav, LV_PCT(100), 68);
     lv_obj_set_style_bg_color(nav, lv_color_hex(0x161B22), 0);
     lv_obj_set_style_border_width(nav, 0, 0);
+    lv_obj_set_style_border_side(nav, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(nav, 1, 0);
+    lv_obj_set_style_border_color(nav, lv_color_hex(0x21262D), 0);
     lv_obj_set_style_radius(nav, 0, 0);
-    lv_obj_set_style_pad_hor(nav, 8, 0);
+    lv_obj_set_style_pad_hor(nav, 10, 0);
     lv_obj_set_style_pad_ver(nav, 0, 0);
     lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(nav, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     /* 返回按钮 */
     s_back_btn = lv_btn_create(nav);
-    lv_obj_set_size(s_back_btn, 36, 36);
+    lv_obj_set_size(s_back_btn, 56, 56);
     lv_obj_set_style_bg_color(s_back_btn, lv_color_hex(0x30363D), 0);
     lv_obj_set_style_border_width(s_back_btn, 0, 0);
-    lv_obj_set_style_radius(s_back_btn, 8, 0);
+    lv_obj_set_style_radius(s_back_btn, 10, 0);
     lv_obj_set_style_shadow_width(s_back_btn, 0, 0);
     lv_obj_add_event_cb(s_back_btn, btn_fx, LV_EVENT_ALL, NULL);
     lv_obj_t *back_sym = lv_label_create(s_back_btn);
@@ -187,15 +190,24 @@ void ui_create_main_screen(void)
         lv_obj_set_size(it, 56, 30);
         lv_obj_set_style_bg_color(it, lv_color_hex(CLR[i]), 0);
         lv_obj_set_style_bg_opa(it, LV_OPA_20, 0);
-        lv_obj_set_style_radius(it, 15, 0);
-        lv_obj_set_style_border_width(it, 2, 0);
-        lv_obj_set_style_border_color(it, lv_color_hex(CLR[i]), 0);
+        lv_obj_set_style_radius(it, 10, 0);
+        lv_obj_set_style_border_width(it, 0, 0);
         lv_obj_set_style_pad_all(it, 0, 0);
+
+        /* 左侧色条 — 增强情绪识别度 */
+        lv_obj_t *bar = lv_obj_create(it);
+        lv_obj_set_size(bar, 3, 18);
+        lv_obj_align(bar, LV_ALIGN_LEFT_MID, 6, 0);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(CLR[i]), 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_70, 0);
+        lv_obj_set_style_border_width(bar, 0, 0);
+        lv_obj_set_style_radius(bar, 2, 0);
+
         lv_obj_t *lb = lv_label_create(it);
         lv_label_set_text(lb, CN[i]);
         font_zh(lb);
         lv_obj_set_style_text_color(lb, lv_color_hex(CLR[i]), 0);
-        lv_obj_center(lb);
+        lv_obj_align(lb, LV_ALIGN_CENTER, 2, 0);  /* 右偏 2px 补偿左侧色条 */
     }
 
     /* ---- 相机 ---- */
@@ -222,14 +234,19 @@ void ui_create_main_screen(void)
     emotion_badge = lv_obj_create(camera_container);
     lv_obj_set_size(emotion_badge, LV_SIZE_CONTENT, 30);
     lv_obj_set_style_bg_color(emotion_badge, lv_color_hex(CLR[6]), 0);
-    lv_obj_set_style_bg_opa(emotion_badge, LV_OPA_80, 0);
+    lv_obj_set_style_bg_opa(emotion_badge, LV_OPA_90, 0);
     lv_obj_set_style_radius(emotion_badge, 15, 0);
-    lv_obj_set_style_border_width(emotion_badge, 0, 0);
+    lv_obj_set_style_border_width(emotion_badge, 1, 0);
+    lv_obj_set_style_border_color(emotion_badge, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_opa(emotion_badge, LV_OPA_20, 0);
+    lv_obj_set_style_shadow_width(emotion_badge, 8, 0);
+    lv_obj_set_style_shadow_color(emotion_badge, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(emotion_badge, LV_OPA_40, 0);
     lv_obj_set_style_pad_hor(emotion_badge, 10, 0);
     lv_obj_set_pos(emotion_badge, 8, 8);
     lv_obj_set_flex_flow(emotion_badge, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(emotion_badge, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(emotion_badge, 4, 0);
+    lv_obj_set_style_pad_column(emotion_badge, 6, 0);
     lv_obj_add_flag(emotion_badge, LV_OBJ_FLAG_HIDDEN);
 
     badge_name = lv_label_create(emotion_badge);
@@ -274,12 +291,13 @@ void ui_create_main_screen(void)
 
     /* 分隔 */
     lv_obj_t *sep = lv_obj_create(right_panel);
-    lv_obj_set_size(sep, 72, 1);
+    lv_obj_set_size(sep, 80, 1);
     lv_obj_set_style_bg_color(sep, lv_color_hex(0x30363D), 0);
+    lv_obj_set_style_bg_opa(sep, LV_OPA_50, 0);
     lv_obj_set_style_border_width(sep, 0, 0);
     lv_obj_set_style_radius(sep, 0, 0);
-    lv_obj_set_style_margin_top(sep, 8, 0);
-    lv_obj_set_style_margin_bottom(sep, 8, 0);
+    lv_obj_set_style_margin_top(sep, 12, 0);
+    lv_obj_set_style_margin_bottom(sep, 12, 0);
 
     /* 小贴士 */
     right_tip = lv_label_create(right_panel);
@@ -307,11 +325,22 @@ void ui_create_main_screen(void)
     lv_obj_t *sg = lv_obj_create(scr);
     lv_obj_set_size(sg, LV_PCT(100), LV_SIZE_CONTENT);
     pnl_style(sg, lv_color_hex(0x0D1117));
-    lv_obj_set_style_pad_hor(sg, 14, 0);
+    lv_obj_set_style_pad_hor(sg, 12, 0);
     lv_obj_set_style_pad_ver(sg, 8, 0);
     lv_obj_set_style_border_side(sg, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_border_width(sg, 1, 0);
     lv_obj_set_style_border_color(sg, lv_color_hex(0x21262D), 0);
+    lv_obj_set_flex_flow(sg, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(sg, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    /* 左侧强调条 */
+    lv_obj_t *sg_bar = lv_obj_create(sg);
+    lv_obj_set_size(sg_bar, 3, 18);
+    lv_obj_set_style_bg_color(sg_bar, lv_color_hex(0xFFC107), 0);
+    lv_obj_set_style_bg_opa(sg_bar, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(sg_bar, 0, 0);
+    lv_obj_set_style_radius(sg_bar, 2, 0);
+    lv_obj_set_style_margin_right(sg_bar, 8, 0);
 
     suggestion_label = lv_label_create(sg);
     lv_obj_set_width(suggestion_label, LV_PCT(100));
@@ -322,16 +351,16 @@ void ui_create_main_screen(void)
 
     /* ========== 控制栏 ========== */
     lv_obj_t *ctrl = lv_obj_create(scr);
-    lv_obj_set_size(ctrl, LV_PCT(100), 52);
+    lv_obj_set_size(ctrl, LV_PCT(100), 68);
     pnl_style(ctrl, lv_color_hex(0x161B22));
     lv_obj_set_flex_flow(ctrl, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(ctrl, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(ctrl, 16, 0);
+    lv_obj_set_style_pad_column(ctrl, 20, 0);
     lv_obj_set_style_border_side(ctrl, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_border_width(ctrl, 1, 0);
     lv_obj_set_style_border_color(ctrl, lv_color_hex(0x21262D), 0);
 
-    monitor_btn = mk_btn(ctrl, 100, 38);
+    monitor_btn = mk_btn(ctrl, 120, 56);
     lv_obj_set_style_bg_color(monitor_btn, lv_color_hex(0x2EA043), 0);
     lv_obj_add_event_cb(monitor_btn, toggle_monitor, LV_EVENT_CLICKED, NULL);
     lv_obj_t *ml = lv_label_create(monitor_btn);
@@ -340,7 +369,7 @@ void ui_create_main_screen(void)
     lv_obj_set_style_text_color(ml, lv_color_white(), 0);
     lv_obj_center(ml);
 
-    lv_obj_t *set_btn = mk_btn(ctrl, 48, 38);
+    lv_obj_t *set_btn = mk_btn(ctrl, 56, 56);
     lv_obj_t *si = lv_label_create(set_btn);
     lv_label_set_text(si, LV_SYMBOL_SETTINGS);
     font_en(si);

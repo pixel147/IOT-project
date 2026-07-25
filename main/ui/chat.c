@@ -140,13 +140,33 @@ static void append_message(const char *speaker, const char *text, uint32_t color
         lv_obj_delete(lv_obj_get_child(s_messages, 0));
     }
 
-    lv_obj_t *message = lv_label_create(s_messages);
-    lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(message, LV_PCT(100));
-    lv_label_set_text_fmt(message, "%s: %s", speaker, display_text);
-    set_font(message);
-    lv_obj_set_style_text_color(message, lv_color_hex(color), 0);
-    lv_obj_scroll_to_view(message, LV_ANIM_OFF);
+    /* 消息气泡容器 */
+    lv_obj_t *bubble = lv_obj_create(s_messages);
+    lv_obj_set_size(bubble, LV_PCT(90), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(bubble, lv_color_hex(0x161B22), 0);
+    lv_obj_set_style_bg_opa(bubble, LV_OPA_70, 0);
+    lv_obj_set_style_radius(bubble, 8, 0);
+    lv_obj_set_style_border_width(bubble, 0, 0);
+    lv_obj_set_style_pad_hor(bubble, 12, 0);
+    lv_obj_set_style_pad_ver(bubble, 6, 0);
+    lv_obj_set_flex_flow(bubble, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(bubble, 2, 0);
+
+    /* 说话者标签 */
+    lv_obj_t *who = lv_label_create(bubble);
+    lv_label_set_text(who, speaker);
+    set_font(who);
+    lv_obj_set_style_text_color(who, lv_color_hex(color), 0);
+
+    /* 消息正文 */
+    lv_obj_t *msg = lv_label_create(bubble);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, LV_PCT(100));
+    lv_label_set_text(msg, display_text);
+    set_font(msg);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0xC9D1D9), 0);
+
+    lv_obj_scroll_to_view(bubble, LV_ANIM_OFF);
     free(display_text);
 }
 
@@ -221,14 +241,14 @@ static void button_style(lv_obj_t *button)
     lv_obj_set_style_bg_color(button, lv_color_hex(0x30363D), 0);
     lv_obj_set_style_border_width(button, 1, 0);
     lv_obj_set_style_border_color(button, lv_color_hex(0x484F58), 0);
-    lv_obj_set_style_radius(button, 6, 0);
+    lv_obj_set_style_radius(button, 10, 0);
     lv_obj_set_style_shadow_width(button, 0, 0);
 }
 
 static lv_obj_t *icon_button(lv_obj_t *parent, const char *icon)
 {
     lv_obj_t *button = lv_btn_create(parent);
-    lv_obj_set_size(button, 40, 36);
+    lv_obj_set_size(button, 56, 56);
     button_style(button);
 
     lv_obj_t *label = lv_label_create(button);
@@ -247,11 +267,14 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_flex_flow(s_screen, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t *nav = lv_obj_create(s_screen);
-    lv_obj_set_size(nav, LV_PCT(100), 44);
+    lv_obj_set_size(nav, LV_PCT(100), 68);
     lv_obj_set_style_bg_color(nav, lv_color_hex(0x161B22), 0);
     lv_obj_set_style_border_width(nav, 0, 0);
+    lv_obj_set_style_border_side(nav, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(nav, 1, 0);
+    lv_obj_set_style_border_color(nav, lv_color_hex(0x21262D), 0);
     lv_obj_set_style_radius(nav, 0, 0);
-    lv_obj_set_style_pad_hor(nav, 8, 0);
+    lv_obj_set_style_pad_hor(nav, 10, 0);
     lv_obj_set_style_pad_ver(nav, 0, 0);
     lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(nav, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -306,17 +329,20 @@ lv_obj_t *ui_chat_create(void)
     append_message("Assistant", "Send a message to include the latest local emotion.", 0x8B949E);
 
     lv_obj_t *input_bar = lv_obj_create(s_screen);
-    lv_obj_set_size(input_bar, LV_PCT(100), 58);
+    lv_obj_set_size(input_bar, LV_PCT(100), 68);
     lv_obj_set_style_bg_color(input_bar, lv_color_hex(0x161B22), 0);
     lv_obj_set_style_border_width(input_bar, 0, 0);
+    lv_obj_set_style_border_side(input_bar, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_width(input_bar, 1, 0);
+    lv_obj_set_style_border_color(input_bar, lv_color_hex(0x30363D), 0);
     lv_obj_set_style_radius(input_bar, 0, 0);
     lv_obj_set_style_pad_hor(input_bar, 10, 0);
-    lv_obj_set_style_pad_ver(input_bar, 8, 0);
+    lv_obj_set_style_pad_ver(input_bar, 6, 0);
     lv_obj_set_flex_flow(input_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(input_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     s_input = lv_textarea_create(input_bar);
-    lv_obj_set_height(s_input, 40);
+    lv_obj_set_height(s_input, 52);
     lv_obj_set_flex_grow(s_input, 1);
     lv_textarea_set_one_line(s_input, true);
     lv_textarea_set_placeholder_text(s_input, "Type a message...");
@@ -339,13 +365,16 @@ lv_obj_t *ui_chat_create(void)
     set_font(s_status);
     lv_obj_set_style_text_color(s_status, lv_color_hex(0x8B949E), 0);
     lv_obj_set_style_pad_left(s_status, 16, 0);
-    lv_obj_set_style_pad_top(s_status, 4, 0);
-    lv_obj_set_style_pad_bottom(s_status, 4, 0);
+    lv_obj_set_style_pad_top(s_status, 2, 0);
+    lv_obj_set_style_pad_bottom(s_status, 2, 0);
 
     s_keyboard = lv_keyboard_create(s_screen);
     lv_obj_set_width(s_keyboard, LV_PCT(100));
-    lv_obj_set_height(s_keyboard, 190);
+    lv_obj_set_height(s_keyboard, 240);
     lv_keyboard_set_textarea(s_keyboard, s_input);
+    lv_obj_set_style_border_side(s_keyboard, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_width(s_keyboard, 1, 0);
+    lv_obj_set_style_border_color(s_keyboard, lv_color_hex(0x30363D), 0);
     lv_obj_add_event_cb(s_keyboard, on_keyboard, LV_EVENT_READY, NULL);
     lv_obj_add_flag(s_keyboard, LV_OBJ_FLAG_HIDDEN);
 

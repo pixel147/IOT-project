@@ -100,16 +100,19 @@ static void show_connect_dialog(const char *ssid)
 
     /* 对话框卡片 */
     lv_obj_t *card = lv_obj_create(s_dlg);
-    lv_obj_set_size(card, 280, 200);
+    lv_obj_set_size(card, 340, 240);
     lv_obj_center(card);
     lv_obj_set_style_bg_color(card, lv_color_hex(0x161B22), 0);
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_border_color(card, lv_color_hex(0x30363D), 0);
     lv_obj_set_style_radius(card, 12, 0);
-    lv_obj_set_style_pad_all(card, 14, 0);
+    lv_obj_set_style_shadow_width(card, 16, 0);
+    lv_obj_set_style_shadow_color(card, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_style_pad_row(card, 10, 0);
     /* 阻止点击穿透到遮罩 */
     lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
 
@@ -126,7 +129,7 @@ static void show_connect_dialog(const char *ssid)
 
     /* 密码输入 */
     s_dlg_input = lv_textarea_create(card);
-    lv_obj_set_size(s_dlg_input, LV_PCT(100), 36);
+    lv_obj_set_size(s_dlg_input, LV_PCT(100), 52);
     lv_textarea_set_one_line(s_dlg_input, true);
     lv_textarea_set_password_mode(s_dlg_input, true);
     lv_textarea_set_placeholder_text(s_dlg_input, "输入密码…");
@@ -138,7 +141,7 @@ static void show_connect_dialog(const char *ssid)
 
     /* 按钮行 */
     lv_obj_t *btn_row = lv_obj_create(card);
-    lv_obj_set_size(btn_row, LV_PCT(100), 36);
+    lv_obj_set_size(btn_row, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(btn_row, 0, 0);
     lv_obj_set_style_pad_all(btn_row, 0, 0);
@@ -146,29 +149,35 @@ static void show_connect_dialog(const char *ssid)
     lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t *cancel_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(cancel_btn, 100, 32);
+    lv_obj_set_size(cancel_btn, 140, 56);
     lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x30363D), 0);
-    lv_obj_set_style_radius(cancel_btn, 6, 0);
+    lv_obj_set_style_border_width(cancel_btn, 1, 0);
+    lv_obj_set_style_border_color(cancel_btn, lv_color_hex(0x484F58), 0);
+    lv_obj_set_style_radius(cancel_btn, 10, 0);
     lv_obj_add_event_cb(cancel_btn, dlg_cancel, LV_EVENT_CLICKED, NULL);
     lv_obj_t *cl = lv_label_create(cancel_btn);
     lv_label_set_text(cl, "取消");
     font_zh(cl);
+    lv_obj_set_style_text_color(cl, lv_color_hex(0xC9D1D9), 0);
     lv_obj_center(cl);
 
     lv_obj_t *connect_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(connect_btn, 100, 32);
+    lv_obj_set_size(connect_btn, 140, 56);
     lv_obj_set_style_bg_color(connect_btn, lv_color_hex(0x2EA043), 0);
-    lv_obj_set_style_radius(connect_btn, 6, 0);
+    lv_obj_set_style_border_width(connect_btn, 1, 0);
+    lv_obj_set_style_border_color(connect_btn, lv_color_hex(0x2EA043), 0);
+    lv_obj_set_style_radius(connect_btn, 10, 0);
     lv_obj_add_event_cb(connect_btn, dlg_connect, LV_EVENT_CLICKED, NULL);
     lv_obj_t *cbl = lv_label_create(connect_btn);
     lv_label_set_text(cbl, "连接");
     font_zh(cbl);
+    lv_obj_set_style_text_color(cbl, lv_color_white(), 0);
     lv_obj_center(cbl);
 
     /* 弹出键盘 */
     s_dlg_kb = lv_keyboard_create(lv_layer_top());
     lv_obj_set_width(s_dlg_kb, LV_PCT(100));
-    lv_obj_set_height(s_dlg_kb, 190);
+    lv_obj_set_height(s_dlg_kb, 240);
     lv_keyboard_set_textarea(s_dlg_kb, s_dlg_input);
     lv_obj_align(s_dlg_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
 }
@@ -261,11 +270,12 @@ static void scan_task(void *arg)
 
                     /* 按钮容器 */
                     lv_obj_t *btn = lv_btn_create(s_list);
-                    lv_obj_set_size(btn, LV_PCT(100), 36);
+                    lv_obj_set_size(btn, LV_PCT(100), 56);
                     lv_obj_set_style_bg_color(btn, lv_color_hex(0x21262D), 0);
-                    lv_obj_set_style_radius(btn, 6, 0);
-                    lv_obj_set_style_border_width(btn, 0, 0);
-                    lv_obj_set_style_pad_hor(btn, 10, 0);
+                    lv_obj_set_style_radius(btn, 10, 0);
+                    lv_obj_set_style_border_width(btn, 1, 0);
+                    lv_obj_set_style_border_color(btn, lv_color_hex(0x30363D), 0);
+                    lv_obj_set_style_pad_hor(btn, 12, 0);
                     lv_obj_set_style_shadow_width(btn, 0, 0);
 
                     /* 存储 SSID */
@@ -342,7 +352,7 @@ static lv_obj_t *mk_btn(lv_obj_t *p, lv_coord_t w, lv_coord_t h)
     lv_obj_set_style_bg_color(b, lv_color_hex(0x30363D), 0);
     lv_obj_set_style_border_width(b, 1, 0);
     lv_obj_set_style_border_color(b, lv_color_hex(0x484F58), 0);
-    lv_obj_set_style_radius(b, 8, 0);
+    lv_obj_set_style_radius(b, 10, 0);
     lv_obj_set_style_shadow_width(b, 0, 0);
     lv_obj_add_event_cb(b, btn_fx, LV_EVENT_ALL, NULL);
     return b;
@@ -357,16 +367,19 @@ lv_obj_t *ui_settings_create(void)
 
     /* ===== 导航栏 ===== */
     lv_obj_t *nav = lv_obj_create(s_screen);
-    lv_obj_set_size(nav, LV_PCT(100), 44);
+    lv_obj_set_size(nav, LV_PCT(100), 68);
     lv_obj_set_style_bg_color(nav, lv_color_hex(0x161B22), 0);
     lv_obj_set_style_border_width(nav, 0, 0);
+    lv_obj_set_style_border_side(nav, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(nav, 1, 0);
+    lv_obj_set_style_border_color(nav, lv_color_hex(0x21262D), 0);
     lv_obj_set_style_radius(nav, 0, 0);
-    lv_obj_set_style_pad_hor(nav, 8, 0);
+    lv_obj_set_style_pad_hor(nav, 10, 0);
     lv_obj_set_style_pad_ver(nav, 0, 0);
     lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(nav, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    s_back_btn = mk_btn(nav, 36, 36);
+    s_back_btn = mk_btn(nav, 56, 56);
     lv_obj_t *bs = lv_label_create(s_back_btn);
     lv_label_set_text(bs, LV_SYMBOL_LEFT);
     font_en(bs);
@@ -416,13 +429,13 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_flex_flow(right_btns, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(right_btns, 6, 0);
 
-    lv_obj_t *scan_btn = mk_btn(right_btns, 80, 36);
+    lv_obj_t *scan_btn = mk_btn(right_btns, 120, 56);
     lv_obj_t *sl = lv_label_create(scan_btn);
     lv_label_set_text(sl, "扫描");
     font_zh(sl);
     lv_obj_add_event_cb(scan_btn, on_scan_click, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *forget_btn = mk_btn(right_btns, 48, 36);
+    lv_obj_t *forget_btn = mk_btn(right_btns, 56, 56);
     lv_obj_add_event_cb(forget_btn, on_forget, LV_EVENT_CLICKED, NULL);
     lv_obj_t *fl = lv_label_create(forget_btn);
     lv_label_set_text(fl, LV_SYMBOL_TRASH);

@@ -49,20 +49,30 @@ lv_obj_t *ui_home_get_screen(void) { return s_home_screen; }
 /* ---- 单个图标 ---- */
 static lv_obj_t *create_app_icon(lv_obj_t *parent, int index)
 {
-    /* 外层按钮：圆角色块 + 居中符号 */
+    /* 外层按钮：圆角色块 */
     lv_obj_t *btn = lv_btn_create(parent);
     lv_obj_set_size(btn, ICON_SIZE, ICON_SIZE);
     lv_obj_set_style_radius(btn, ICON_RADIUS, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(APP_COLORS[index]), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_20, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_10, 0);
     lv_obj_set_style_border_width(btn, 2, 0);
     lv_obj_set_style_border_color(btn, lv_color_hex(APP_COLORS[index]), 0);
     lv_obj_set_style_shadow_width(btn, 0, 0);
 
-    /* 符号 */
+    /* 圆形衬底 — 增强小符号的视觉重量 */
+    lv_obj_t *plate = lv_obj_create(btn);
+    lv_obj_set_size(plate, 56, 56);
+    lv_obj_set_style_radius(plate, 28, 0);
+    lv_obj_set_style_bg_color(plate, lv_color_hex(APP_COLORS[index]), 0);
+    lv_obj_set_style_bg_opa(plate, LV_OPA_30, 0);
+    lv_obj_set_style_border_width(plate, 0, 0);
+    lv_obj_set_style_pad_all(plate, 0, 0);
+    lv_obj_center(plate);
+
+    /* 符号 — 位于衬底之上 */
     lv_obj_t *sym = lv_label_create(btn);
     lv_label_set_text(sym, APP_SYMBOLS[index]);
-    lv_obj_set_style_text_font(sym, &lv_font_montserrat_14, 0); /* LV_SYMBOL font */
+    lv_obj_set_style_text_font(sym, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(sym, lv_color_hex(APP_COLORS[index]), 0);
     lv_obj_center(sym);
 
@@ -85,6 +95,13 @@ lv_obj_t *ui_home_create(void)
     font_zh(title);
     lv_obj_set_style_text_color(title, lv_color_hex(0x58A6FF), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 24);
+
+    /* 副标题 */
+    lv_obj_t *subtitle = lv_label_create(s_home_screen);
+    lv_label_set_text(subtitle, "Emotion Guardian");
+    lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(subtitle, lv_color_hex(0x484F58), 0);
+    lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 52);
 
     /* ===== 图标网格 ===== */
     lv_obj_t *grid = lv_obj_create(s_home_screen);
@@ -119,10 +136,10 @@ lv_obj_t *ui_home_create(void)
 
     /* ===== 底部版本 ===== */
     lv_obj_t *ver = lv_label_create(s_home_screen);
-    lv_label_set_text(ver, "ESP32-P4 · Emotion Guardian v1.0");
+    lv_label_set_text(ver, "ESP32-P4  ·  v1.0");
     lv_obj_set_style_text_font(ver, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(ver, lv_color_hex(0x484F58), 0);
-    lv_obj_align(ver, LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_obj_set_style_text_color(ver, lv_color_hex(0x30363D), 0);
+    lv_obj_align(ver, LV_ALIGN_BOTTOM_MID, 0, -14);
 
     return s_home_screen;
 }
