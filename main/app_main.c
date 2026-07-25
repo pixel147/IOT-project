@@ -15,6 +15,7 @@
 #include "wifi.h"
 #include "wifi_credentials.h"
 #include "llm_client.h"
+#include "voice_xiaozhi.h"
 
 #include <string.h>
 
@@ -26,6 +27,14 @@
 #define LLM_MODEL_NAME  LLM_MODEL_DEEPSEEK_V4_FLASH
 
 static const char *TAG = "MAIN";
+
+static void on_voice_button(void)
+{
+    esp_err_t ret = voice_xiaozhi_start_listening();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "XiaoZhi manual listening request failed: %s", esp_err_to_name(ret));
+    }
+}
 
 #define CAM_WIDTH   640
 #define CAM_HEIGHT  480
@@ -451,6 +460,17 @@ void app_main(void)
         ESP_LOGW(TAG, "WiFi timeout or failed");
     }
     lvgl_port_unlock();
+
+    /* Start XiaoZhi voice module unconditionally - mic and WakeNet init don't need WiFi.
+     * The voice task will connect WebSocket when the wake word triggers. */
+    {
+        esp_err_t voice_ret = voice_xiaozhi_start();
+        if (voice_ret != ESP_OK) {
+            ESP_LOGW(TAG, "XiaoZhi voice init: %s", esp_err_to_name(voice_ret));
+        } else {
+            ui_chat_set_voice_start_callback(on_voice_button);
+        }
+    }
 
     ESP_LOGI(TAG, "System ready — camera preview + UI running");
 

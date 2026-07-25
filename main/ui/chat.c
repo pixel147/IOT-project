@@ -15,11 +15,13 @@ static lv_obj_t *s_messages;
 static lv_obj_t *s_input;
 static lv_obj_t *s_keyboard;
 static lv_obj_t *s_send_btn;
+static lv_obj_t *s_voice_btn;
 static lv_obj_t *s_clear_btn;
 static lv_obj_t *s_status;
 static lv_obj_t *s_back_btn;
 static lv_obj_t *s_emo_badge;
 static lv_obj_t *s_emo_label;
+static ui_chat_voice_start_cb_t s_voice_start_cb;
 
 /* 情绪配色（与 ui.c 一致） */
 static const uint32_t EMO_COLORS[7] = {
@@ -186,6 +188,12 @@ static void on_send(lv_event_t *event)
     send_message();
 }
 
+static void on_voice_start(lv_event_t *event)
+{
+    (void)event;
+    if (s_voice_start_cb) s_voice_start_cb();
+}
+
 static void on_clear(lv_event_t *event)
 {
     (void)event;
@@ -322,6 +330,10 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_style_margin_left(s_send_btn, 8, 0);
     lv_obj_add_event_cb(s_send_btn, on_send, LV_EVENT_CLICKED, NULL);
 
+    s_voice_btn = icon_button(input_bar, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_margin_left(s_voice_btn, 8, 0);
+    lv_obj_add_event_cb(s_voice_btn, on_voice_start, LV_EVENT_CLICKED, NULL);
+
     s_status = lv_label_create(s_screen);
     lv_label_set_text(s_status, "Ready");
     set_font(s_status);
@@ -345,6 +357,11 @@ void ui_chat_set_back_callback(lv_event_cb_t cb)
     if (s_back_btn) lv_obj_add_event_cb(s_back_btn, cb, LV_EVENT_CLICKED, NULL);
 }
 
+void ui_chat_set_voice_start_callback(ui_chat_voice_start_cb_t cb)
+{
+    s_voice_start_cb = cb;
+}
+
 /* 从摄像头回调更新情绪徽章（实时反映检测到的情绪） */
 void ui_chat_update_emotion(int cls, float conf)
 {
@@ -357,4 +374,31 @@ void ui_chat_update_emotion(int cls, float conf)
     lv_label_set_text_fmt(s_emo_label, "%s %d%%", EMO_NAMES[cls], pct);
     lv_obj_set_style_bg_color(s_emo_badge, lv_color_hex(EMO_COLORS[cls]), 0);
     lv_obj_clear_flag(s_emo_badge, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ui_chat_voice_append_user(const char *text)
+{
+    if (!text || !text[0]) return;
+    if (lvgl_port_lock(-1)) {
+        append_message("You (voice)", text, 0x58A6FF);
+        lvgl_port_unlock();
+    }
+}
+
+void ui_chat_voice_append_assistant(const char *text)
+{
+    if (!text || !text[0]) return;
+    if (lvgl_port_lock(-1)) {
+        append_message("XiaoZhi", text, 0xC9D1D9);
+        lvgl_port_unlock();
+    }
+}
+
+void ui_chat_voice_set_status(const char *status)
+{
+    if (!status) return;
+    if (lvgl_port_lock(-1)) {
+        if (s_status) lv_label_set_text(s_status, status);
+        lvgl_port_unlock();
+    }
 }

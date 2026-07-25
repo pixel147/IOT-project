@@ -3,6 +3,11 @@ dependencies:
     version: ^5.2.3
   espressif/esp-nn: ^1.2.2
   espressif/openai: ^1.1.0
+  # Upstream XiaoZhi voice pipeline dependencies: WakeNet/AFE plus Opus codec.
+  # The application keeps its own UI and only consumes recognized/result text.
+  espressif/esp-sr: ~2.4.7
+  espressif/esp_audio_codec: ~2.5.0
+  espressif/esp_websocket_client: ^1.5.0
   espressif/esp_wifi_remote:
     version: "0.13.*"
   espressif/esp_hosted:
