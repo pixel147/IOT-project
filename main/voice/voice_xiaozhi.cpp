@@ -221,8 +221,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t, int32_t event_id, vo
         ESP_LOGW(TAG, "MQTT error");
 
     } else if (event_id == MQTT_EVENT_DATA) {
-        /* Ignore messages received before we send hello (server may push stale data) */
-        if (!s_voice.hello_sent) return;
+        /* If server pushes hello before our hello, still process it (broker auto-routes) */
         std::string topic(e.topic, e.topic_len);
         std::string payload(e.data, e.data_len);
         ESP_LOGD(TAG, "MQTT data on %s: %.*s", topic.c_str(), (int)payload.size(), payload.c_str());
