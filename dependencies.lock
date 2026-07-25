@@ -16,7 +16,7 @@ dependencies:
       require: private
       version: '>=4.1'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 0.5.3
   espressif/dl_fft:
@@ -413,18 +413,10 @@ dependencies:
       type: service
     version: 0.13.0
   espressif/openai:
-    component_hash: b4a7b9765e943ab54d27b643ebf13385fe5a07cd369f04513ef37beb8d510524
-    dependencies:
-    - name: espressif/cmake_utilities
-      registry_url: https://components.espressif.com
-      require: private
-      version: 0.*
-    - name: idf
-      require: private
-      version: '>=4.4.0'
+    dependencies: []
     source:
-      registry_url: https://components.espressif.com/
-      type: service
+      path: E:\esp_practice\first_practice\components\espressif__openai
+      type: local
     version: 1.1.0
   espressif/usb_host_uvc:
     component_hash: f20c4e4dea50536e2e29daaf589b5f5984402284c155867daef27d6b64869f78
@@ -461,6 +453,7 @@ dependencies:
       type: service
     version: 9.5.0
 direct_dependencies:
+- espressif/cmake_utilities
 - espressif/esp-dl
 - espressif/esp-nn
 - espressif/esp-sr
@@ -470,6 +463,7 @@ direct_dependencies:
 - espressif/esp_websocket_client
 - espressif/esp_wifi_remote
 - espressif/openai
-manifest_hash: c7ef9ad6bbde300cf368384e0e1d29c16c019dd5c08f4164680d74bb1afd3f79
+- idf
+manifest_hash: 1854ffaa5821137c063a2a86ff57ac4a1d68c69e213ce1d1479a605b028b079b
 target: esp32p4
 version: 2.0.0

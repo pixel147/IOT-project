@@ -125,7 +125,7 @@ static void websocket_event(void *, esp_event_base_t, int32_t event_id, void *ev
         return;
     }
     if (event_id == WEBSOCKET_EVENT_DATA && event && event->op_code == WS_TRANSPORT_OPCODES_TEXT) {
-        ESP_LOGI(TAG, "WS_EVENT: DATA (text) len=%d", event->data_len);
+        ESP_LOGI(TAG, "WS_EVENT: TEXT len=%d: %.*s", event->data_len, event->data_len, event->data_ptr);
     } else if (event_id == WEBSOCKET_EVENT_DATA && event && event->op_code == WS_TRANSPORT_OPCODES_BINARY) {
         ESP_LOGI(TAG, "WS_EVENT: DATA (binary) len=%d", event->data_len);
         return;
@@ -153,22 +153,59 @@ static void websocket_event(void *, esp_event_base_t, int32_t event_id, void *ev
     } else if (cJSON_IsString(type) && strcmp(type->valuestring, "tts") == 0) {
         cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
         cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
-        if (cJSON_IsString(text) && text->valuestring[0]) {
-            ui_chat_voice_append_assistant(text->valuestring);
+        /* Only append on sentence_end or stop to avoid duplicate display */
+        if (cJSON_IsString(state) && cJSON_IsString(text) && text->valuestring[0]) {
+            if (strcmp(state->valuestring, "sentence_end") == 0 ||
+                strcmp(state->valuestring, "stop") == 0) {
+                ui_chat_voice_append_assistant(text->valuestring);
+            }
         }
         if (cJSON_IsString(state) && strcmp(state->valuestring, "stop") == 0) {
             stop_listening("Voice: ready");
+        }
+    } else if (cJSON_IsString(type) && strcmp(type->valuestring, "mcp") == 0) {
+        /* Server-side MCP handshake (Model Context Protocol for capabilities). */
+        cJSON *payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
+        cJSON *method = payload ? cJSON_GetObjectItemCaseSensitive(payload, "method") : nullptr;
+        cJSON *msg_id = payload ? cJSON_GetObjectItemCaseSensitive(payload, "id") : nullptr;
+        if (cJSON_IsString(method) && strcmp(method->valuestring, "initialize") == 0) {
+            int id = cJSON_IsNumber(msg_id) ? msg_id->valueint : 1;
+            char mcp_resp[512] = {};
+            snprintf(mcp_resp, sizeof(mcp_resp),
+                     "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,"
+                     "\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},"
+                     "\"serverInfo\":{\"name\":\"esp32-p4\",\"version\":\"2.4.0\"}}},"
+                     "\"session_id\":\"%s\"}",
+                     id, s_voice.session_id);
+            esp_websocket_client_send_text(s_voice.websocket, mcp_resp, strlen(mcp_resp), portMAX_DELAY);
+            ESP_LOGI(TAG, "MCP initialize responded");
+        } else if (cJSON_IsString(method) && strcmp(method->valuestring, "tools/list") == 0) {
+            int id = cJSON_IsNumber(msg_id) ? msg_id->valueint : 2;
+            char mcp_resp[256] = {};
+            snprintf(mcp_resp, sizeof(mcp_resp),
+                     "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,"
+                     "\"result\":{\"tools\":[]}},\"session_id\":\"%s\"}",
+                     id, s_voice.session_id);
+            esp_websocket_client_send_text(s_voice.websocket, mcp_resp, strlen(mcp_resp), portMAX_DELAY);
+            ESP_LOGI(TAG, "MCP tools/list responded (empty)");
         }
     }
     cJSON_Delete(root);
 }
 
-static bool open_xiaozhi_session(const char *wake_word)
+static void ws_close(void)
 {
-    if (s_voice.websocket != nullptr) {
+    if (s_voice.websocket) {
+        esp_websocket_client_stop(s_voice.websocket);
+        vTaskDelay(pdMS_TO_TICKS(100));
         esp_websocket_client_destroy(s_voice.websocket);
         s_voice.websocket = nullptr;
     }
+}
+
+static bool open_xiaozhi_session(const char *wake_word)
+{
+    ws_close();
     xEventGroupClearBits(s_voice.events, kServerHello | kWebSocketConnected);
     s_voice.session_id[0] = '\0';
 
@@ -187,125 +224,145 @@ static bool open_xiaozhi_session(const char *wake_word)
     if (!s_voice.websocket) return false;
 
     esp_websocket_register_events(s_voice.websocket, WEBSOCKET_EVENT_ANY, websocket_event, nullptr);
-    if (esp_websocket_client_start(s_voice.websocket) != ESP_OK) return false;
-
-    EventBits_t bits = xEventGroupWaitBits(s_voice.events, kWebSocketConnected, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
-    if (!(bits & kWebSocketConnected)) {
-        ui_chat_voice_set_status("Voice: XiaoZhi connection timed out");
+    esp_err_t err = esp_websocket_client_start(s_voice.websocket);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "WS start failed: %s", esp_err_to_name(err));
         return false;
     }
 
-    char hello[192];
+    EventBits_t bits = xEventGroupWaitBits(s_voice.events, kWebSocketConnected, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
+    if (!(bits & kWebSocketConnected)) {
+        ESP_LOGI(TAG, "WS connect timed out (10s)");
+        ui_chat_voice_set_status("Voice: conn timed out");
+        return false;
+    }
+    ESP_LOGI(TAG, "WS connected OK");
+
+    char hello[384];
     snprintf(hello, sizeof(hello),
              "{\"type\":\"hello\",\"version\":%d,\"transport\":\"websocket\","
+             "\"features\":{\"mcp\":true,\"aec\":false,\"vad\":true},"
              "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":16000,\"channels\":1,\"frame_duration\":60}}",
              s_voice.protocol_version);
     esp_websocket_client_send_text(s_voice.websocket, hello, strlen(hello), portMAX_DELAY);
 
     bits = xEventGroupWaitBits(s_voice.events, kServerHello, pdTRUE, pdFALSE, pdMS_TO_TICKS(5000));
-    return (bits & kServerHello) != 0;
+    bool ok = (bits & kServerHello) != 0;
+    ESP_LOGI(TAG, "WS hello %s", ok ? "received OK" : "timed out (5s)");
+    return ok;
 }
 
 static void voice_task(void *arg)
 {
     (void)arg;
 
-    /* Settle delay before WebSocket connect */
-    vTaskDelay(pdMS_TO_TICKS(500));
+    while (1) {  /* Outer loop: reconnect forever */
+        /* Settle delay before WebSocket connect */
+        vTaskDelay(pdMS_TO_TICKS(500));
 
-    if (!open_xiaozhi_session("xiaozhi")) {
-        ui_chat_voice_set_status("Voice: session failed");
-        goto done;
-    }
-
-    /* Wait for wake word */
-    ui_chat_voice_set_status("Voice: say xiaozhixiaozhi");
-
-    while (s_voice.websocket && esp_websocket_client_is_connected(s_voice.websocket)) {
-        /* Check for manual listening request */
-        if (s_voice.manual_start_requested.exchange(false)) {
-            char listen[192];
-            snprintf(listen, sizeof(listen),
-                     "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\","
-                     "\"session_id\":\"%s\"}", s_voice.session_id);
-            if (s_voice.websocket) esp_websocket_client_send_text(s_voice.websocket, listen, strlen(listen), portMAX_DELAY);
-            s_voice.listening = true;
-            s_voice.silence_frames = 0;
-            s_voice.opus_pcm.clear();
-            ui_chat_voice_set_status("Voice: listening...");
-        }
-
-        /* Read audio from codec and feed to AFE pipeline (always, for wake word detection) */
-        if (!s_voice.afe_iface || !s_voice.afe || !s_voice.codec) {
-            vTaskDelay(pdMS_TO_TICKS(50));
+        if (!open_xiaozhi_session("xiaozhi")) {
+            /* Retry with short delays; user button can break out early */
+            ui_chat_voice_set_status("Voice: retry in 3s...");
+            for (int i = 0; i < 6; i++) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                if (s_voice.manual_start_requested.exchange(false)) {
+                    break;  /* User clicked → retry immediately */
+                }
+            }
             continue;
         }
-        /* Pre-allocated buffer for AFE feeding (avoids heap alloc per iteration) */
-        static int16_t *afe_buf = nullptr;
-        static int afe_buf_size = 0;
-        int feed_chunk = s_voice.afe_iface->get_feed_chunksize(s_voice.afe);
-        int needed = feed_chunk * (int)sizeof(int16_t);
-        if (!afe_buf || afe_buf_size < needed) {
-            if (afe_buf) heap_caps_free(afe_buf);
-            afe_buf = (int16_t *)heap_caps_malloc(needed, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-            afe_buf_size = afe_buf ? needed : 0;
-            if (!afe_buf) {
+
+        /* Wait for wake word */
+        ui_chat_voice_set_status("Voice: say xiaozhixiaozhi");
+
+        while (s_voice.websocket && esp_websocket_client_is_connected(s_voice.websocket)) {
+            /* Check for manual listening request */
+            if (s_voice.manual_start_requested.exchange(false)) {
+                char listen[192];
+                snprintf(listen, sizeof(listen),
+                         "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\","
+                         "\"session_id\":\"%s\"}", s_voice.session_id);
+                if (s_voice.websocket) esp_websocket_client_send_text(s_voice.websocket, listen, strlen(listen), portMAX_DELAY);
+                s_voice.listening = true;
+                s_voice.silence_frames = 0;
+                s_voice.opus_pcm.clear();
+                ui_chat_voice_set_status("Voice: listening...");
+            }
+
+            /* Read audio from codec and feed to AFE pipeline (always, for wake word detection) */
+            if (!s_voice.afe_iface || !s_voice.afe || !s_voice.codec) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            }
+            /* Pre-allocated buffer for AFE feeding (avoids heap alloc per iteration) */
+            static int16_t *afe_buf = nullptr;
+            static int afe_buf_size = 0;
+            int feed_chunk = s_voice.afe_iface->get_feed_chunksize(s_voice.afe);
+            int needed = feed_chunk * (int)sizeof(int16_t);
+            if (!afe_buf || afe_buf_size < needed) {
+                if (afe_buf) heap_caps_free(afe_buf);
+                afe_buf = (int16_t *)heap_caps_malloc(needed, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                afe_buf_size = afe_buf ? needed : 0;
+                if (!afe_buf) {
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    continue;
+                }
+            }
+            /* Read PCM directly from I2S RX (codec_dev_read returns 0 on this board) */
+            size_t i2s_bytes = 0;
+            esp_err_t i2s_ret = i2s_channel_read(s_voice.rx, afe_buf, needed, &i2s_bytes, pdMS_TO_TICKS(50));
+            if (i2s_ret == ESP_OK && i2s_bytes > 0) {
+                s_voice.afe_iface->feed(s_voice.afe, afe_buf);
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(5));
+            }
+
+            /* Fetch processed audio from AFE (always, to check wake word trigger) */
+            afe_fetch_result_t *result = s_voice.afe_iface->fetch(s_voice.afe);
+            if (!result) {
                 vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
             }
-        }
-        /* Read PCM directly from I2S RX (codec_dev_read returns 0 on this board) */
-        size_t i2s_bytes = 0;
-        esp_err_t i2s_ret = i2s_channel_read(s_voice.rx, afe_buf, needed, &i2s_bytes, pdMS_TO_TICKS(50));
-        if (i2s_ret == ESP_OK && i2s_bytes > 0) {
-            s_voice.afe_iface->feed(s_voice.afe, afe_buf);
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(5));
+            /* Check for wake word trigger event */
+            if (result->wakeup_state > 0 && !s_voice.listening) {
+                ESP_LOGI(TAG, "Wake word triggered! state=%d", result->wakeup_state);
+                char listen[192];
+                snprintf(listen, sizeof(listen),
+                         "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\","
+                         "\"session_id\":\"%s\"}", s_voice.session_id);
+                if (s_voice.websocket) esp_websocket_client_send_text(s_voice.websocket, listen, strlen(listen), portMAX_DELAY);
+                s_voice.listening = true;
+                s_voice.silence_frames = 0;
+                s_voice.opus_pcm.clear();
+                ui_chat_voice_set_status("Voice: wake word detected");
+            }
+            /* Only send audio data when actively listening */
+            if (!s_voice.listening || result->data_size == 0) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+
+            /* Opus-encode and send */
+            const size_t samples = result->data_size / sizeof(int16_t);
+            s_voice.opus_pcm.insert(s_voice.opus_pcm.end(), result->data, result->data + samples);
+            while (s_voice.opus_pcm.size() >= kOpusFrameSamples) {
+                send_opus_frame(s_voice.opus_pcm.data());
+                s_voice.opus_pcm.erase(s_voice.opus_pcm.begin(),
+                                       s_voice.opus_pcm.begin() + kOpusFrameSamples);
+            }
+            s_voice.silence_frames = result->vad_state == VAD_SILENCE ? s_voice.silence_frames + 1 : 0;
+            if (s_voice.silence_frames > 30) {
+                stop_listening("Voice: processing");
+            }
         }
 
-        /* Fetch processed audio from AFE (always, to check wake word trigger) */
-        afe_fetch_result_t *result = s_voice.afe_iface->fetch(s_voice.afe);
-        if (!result) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-        /* Check for wake word trigger event */
-        if (result->wakeup_state > 0 && !s_voice.listening) {
-            ESP_LOGI(TAG, "Wake word triggered! state=%d", result->wakeup_state);
-            char listen[192];
-            snprintf(listen, sizeof(listen),
-                     "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\","
-                     "\"session_id\":\"%s\"}", s_voice.session_id);
-            if (s_voice.websocket) esp_websocket_client_send_text(s_voice.websocket, listen, strlen(listen), portMAX_DELAY);
-            s_voice.listening = true;
-            s_voice.silence_frames = 0;
-            s_voice.opus_pcm.clear();
-            ui_chat_voice_set_status("Voice: wake word detected");
-        }
-        /* Only send audio data when actively listening */
-        if (!s_voice.listening || result->data_size == 0) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-
-        /* Opus-encode and send */
-        const size_t samples = result->data_size / sizeof(int16_t);
-        s_voice.opus_pcm.insert(s_voice.opus_pcm.end(), result->data, result->data + samples);
-        while (s_voice.opus_pcm.size() >= kOpusFrameSamples) {
-            send_opus_frame(s_voice.opus_pcm.data());
-            s_voice.opus_pcm.erase(s_voice.opus_pcm.begin(),
-                                   s_voice.opus_pcm.begin() + kOpusFrameSamples);
-        }
-        s_voice.silence_frames = result->vad_state == VAD_SILENCE ? s_voice.silence_frames + 1 : 0;
-        if (s_voice.silence_frames > 30) {
-            stop_listening("Voice: processing");
-        }
+        /* Inner loop exited => connection lost. Clean up and retry. */
+        ESP_LOGI(TAG, "WS disconnected, reconnecting...");
+        ui_chat_voice_set_status("Voice: reconnecting...");
+        s_voice.listening = false;
+        s_voice.session_id[0] = '\0';
+        ws_close();
     }
-
-done:
-    ui_chat_voice_set_status("Voice: disconnected");
-    s_voice.listening = false;
-    vTaskDelete(NULL);
 }
 
 
@@ -362,6 +419,15 @@ static void voice_hardware_init_task(void *arg)
             nvs_get_str(brd, "uuid", s_voice.uuid, &sz);
             nvs_close(brd);
         }
+    }
+    /* Fallback: generate a device UUID from MAC if not stored in NVS */
+    if (s_voice.uuid[0] == '\0') {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(s_voice.uuid, sizeof(s_voice.uuid),
+                 "%02x%02x%02x-%02x%02x%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        ESP_LOGI(TAG, "Generated UUID from MAC: %s", s_voice.uuid);
     }
 
     /* ---- Device ID (Wi-Fi STA MAC) ---- */
@@ -465,9 +531,9 @@ static void voice_hardware_init_task(void *arg)
     {
         esp_opus_enc_config_t opus_cfg = {
             .sample_rate = ESP_AUDIO_SAMPLE_RATE_16K, .channel = ESP_AUDIO_MONO,
-            .bits_per_sample = ESP_AUDIO_BIT16, .bitrate = ESP_OPUS_BITRATE_AUTO,
+            .bits_per_sample = ESP_AUDIO_BIT16, .bitrate = 24000,
             .frame_duration = ESP_OPUS_ENC_FRAME_DURATION_60_MS,
-            .application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO, .complexity = 0,
+            .application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO, .complexity = 5,
             .enable_fec = false, .enable_dtx = true, .enable_vbr = true,
         };
         esp_opus_enc_open(&opus_cfg, sizeof(opus_cfg), &s_voice.opus);
@@ -481,7 +547,7 @@ static void voice_hardware_init_task(void *arg)
     /* ---- Start voice processing task ---- */
     ui_chat_voice_set_status("Voice: say xiaozhixiaozhi");
     ESP_LOGI(TAG, "D_INIT: step7b creating voice_task...");
-    xTaskCreate(voice_task, "xiaozhi_voice", 16384, nullptr, 4, nullptr);
+    xTaskCreate(voice_task, "xiaozhi_voice", 32768, nullptr, 4, nullptr);
     ESP_LOGI(TAG, "D_INIT: sleeping forever to avoid exit crash");
     while (1) { vTaskDelay(pdMS_TO_TICKS(30000)); }
 
@@ -506,7 +572,7 @@ extern "C" esp_err_t voice_xiaozhi_start(void)
 
     BaseType_t created = xTaskCreate(
         voice_hardware_init_task,
-        "voice_init", 16384, nullptr, 3, nullptr);
+        "voice_init", 24576, nullptr, 3, nullptr);
     if (created != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
@@ -521,5 +587,16 @@ extern "C" esp_err_t voice_xiaozhi_start_listening(void)
     }
     s_voice.manual_start_requested.store(true);
     return ESP_OK;
+}
+
+/* ---- OTA / device activation ----
+ *  Stubbed — the MCP handshake (handled above) is the critical piece the
+ *  server waits on.  Full OTA registration comes in a follow-up when the
+ *  esp_http_client dependency has its own background task.
+ */
+extern "C" esp_err_t xiaozhi_ota_register(void)
+{
+    ESP_LOGW(TAG, "OTA register not yet implemented (stub)");
+    return ESP_ERR_NOT_SUPPORTED;
 }
 }
