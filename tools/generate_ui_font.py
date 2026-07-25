@@ -95,6 +95,8 @@ def main():
 
     source = f'''#include "ui_font_zh_22.h"
 
+LV_FONT_DECLARE(lv_font_source_han_sans_sc_14_cjk);
+
 /* 此文件由 tools/generate_ui_font.py 生成，请勿手工修改。 */
 static const uint8_t glyph_bitmap[] = {{
 {c_array(bitmap)}
@@ -129,6 +131,7 @@ const lv_font_t ui_font_zh_22 = {{
     .underline_position = -2,
     .underline_thickness = 1,
     .dsc = &font_dsc,
+    .fallback = &lv_font_source_han_sans_sc_14_cjk,
 }};
 '''
     header = '''#ifndef UI_FONT_ZH_22_H

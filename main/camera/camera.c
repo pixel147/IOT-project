@@ -142,14 +142,13 @@ static void cam_capture_task(void *arg)
                                    s_cam.width, s_cam.height, s_cam.stride,
                                    s_cam.pixel_format);
                 }
-                /* 人脸检测在回调里占 ~26ms，让出 CPU 避免 TWDT 超时 */
-                taskYIELD();
             }
         }
 
         if (ioctl(fd, VIDIOC_QBUF, &buf) != 0) {
             ESP_LOGE(TAG, "QBUF failed");
         }
+        vTaskDelay(1);
     }
 
     ESP_LOGI(TAG, "Camera capture task stopped");

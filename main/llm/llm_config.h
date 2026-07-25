@@ -40,13 +40,7 @@ extern "C" {
  * 预设模型名
  * ============================================================ */
 
-#define LLM_MODEL_GPT4O           "gpt-4o"
-#define LLM_MODEL_GPT4O_MINI      "gpt-4o-mini"
-#define LLM_MODEL_DEEPSEEK_CHAT   "deepseek-chat"
-#define LLM_MODEL_DEEPSEEK_REASONER "deepseek-reasoner"
-#define LLM_MODEL_QWEN_MAX        "qwen-max"
-#define LLM_MODEL_QWEN_TURBO      "qwen-turbo"
-#define LLM_MODEL_GROQ_LLAMA4     "meta-llama/llama-4-scout-17b-16e-instruct"
+#define LLM_MODEL_DEEPSEEK_V4_FLASH "deepseek-v4-flash"
 
 /* ============================================================
  * 默认参数
@@ -70,7 +64,7 @@ extern const char *LLM_EMOTION_PROMPTS[];  /* 每条情绪对应的系统提示�
  *   llm_config_t cfg = {
  *       .base_url = LLM_BASE_DEEPSEEK,
  *       .api_key  = "sk-xxxxxxxx",
- *       .model    = LLM_MODEL_DEEPSEEK_CHAT,
+ *       .model    = LLM_MODEL_DEEPSEEK_V4_FLASH,
  *   };
  *   llm_init(&cfg);
  * ============================================================ */

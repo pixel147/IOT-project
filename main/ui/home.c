@@ -84,7 +84,6 @@ lv_obj_t *ui_home_create(void)
     lv_label_set_text(title, "情绪守护");
     font_zh(title);
     lv_obj_set_style_text_color(title, lv_color_hex(0x58A6FF), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 24);
 
     /* ===== 图标网格 ===== */

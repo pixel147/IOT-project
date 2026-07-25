@@ -2,10 +2,13 @@
 #include "llm_client.h"
 #include "esp_lvgl_port.h"
 #include "ui_font_zh_22.h"
+#include <stdlib.h>
+#include <string.h>
 
 LV_FONT_DECLARE(lv_font_montserrat_14);
 
 #define CHAT_MAX_MESSAGES 40
+#define CHAT_RENDER_TEXT_MAX 4096
 
 static lv_obj_t *s_screen;
 static lv_obj_t *s_messages;
@@ -51,6 +54,64 @@ static void set_font(lv_obj_t *obj)
     lv_obj_set_style_text_font(obj, &ui_font_zh_22, 0);
 }
 
+static size_t utf8_decode(const char *text, uint32_t *codepoint)
+{
+    const uint8_t *s = (const uint8_t *)text;
+    if (s[0] < 0x80) {
+        *codepoint = s[0];
+        return 1;
+    }
+    if ((s[0] & 0xe0) == 0xc0 && (s[1] & 0xc0) == 0x80) {
+        *codepoint = ((uint32_t)(s[0] & 0x1f) << 6) | (s[1] & 0x3f);
+        return *codepoint >= 0x80 ? 2 : 0;
+    }
+    if ((s[0] & 0xf0) == 0xe0 && (s[1] & 0xc0) == 0x80 && (s[2] & 0xc0) == 0x80) {
+        *codepoint = ((uint32_t)(s[0] & 0x0f) << 12) |
+                     ((uint32_t)(s[1] & 0x3f) << 6) | (s[2] & 0x3f);
+        return (*codepoint >= 0x800 && (*codepoint < 0xd800 || *codepoint > 0xdfff)) ? 3 : 0;
+    }
+    if ((s[0] & 0xf8) == 0xf0 && (s[1] & 0xc0) == 0x80 &&
+        (s[2] & 0xc0) == 0x80 && (s[3] & 0xc0) == 0x80) {
+        *codepoint = ((uint32_t)(s[0] & 0x07) << 18) |
+                     ((uint32_t)(s[1] & 0x3f) << 12) |
+                     ((uint32_t)(s[2] & 0x3f) << 6) | (s[3] & 0x3f);
+        return (*codepoint >= 0x10000 && *codepoint <= 0x10ffff) ? 4 : 0;
+    }
+    return 0;
+}
+
+static void sanitize_display_text(char *out, size_t out_size, const char *text)
+{
+    const char *src = text;
+    char *dst = out;
+    char *end = out + out_size - 1;
+
+    while (*src && dst < end) {
+        if (*src == '\r') {
+            src++;
+            continue;
+        }
+        if (*src == '\n') {
+            *dst++ = *src++;
+            continue;
+        }
+
+        uint32_t codepoint = 0;
+        size_t bytes = utf8_decode(src, &codepoint);
+        lv_font_glyph_dsc_t glyph_dsc;
+        if (bytes && dst + bytes <= end &&
+            lv_font_get_glyph_dsc(&ui_font_zh_22, &glyph_dsc, codepoint, 0)) {
+            memcpy(dst, src, bytes);
+            dst += bytes;
+            src += bytes;
+        } else {
+            *dst++ = '?';
+            src += bytes ? bytes : 1;
+        }
+    }
+    *dst = '\0';
+}
+
 static void set_request_state(bool busy)
 {
     if (busy) {
@@ -68,6 +129,11 @@ static void append_message(const char *speaker, const char *text, uint32_t color
 {
     if (!s_messages || !text) return;
 
+    size_t display_size = strnlen(text, CHAT_RENDER_TEXT_MAX - 1) + 1;
+    char *display_text = malloc(display_size);
+    if (!display_text) return;
+    sanitize_display_text(display_text, display_size, text);
+
     while (lv_obj_get_child_count(s_messages) >= CHAT_MAX_MESSAGES) {
         lv_obj_delete(lv_obj_get_child(s_messages, 0));
     }
@@ -75,10 +141,11 @@ static void append_message(const char *speaker, const char *text, uint32_t color
     lv_obj_t *message = lv_label_create(s_messages);
     lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(message, LV_PCT(100));
-    lv_label_set_text_fmt(message, "%s: %s", speaker, text);
+    lv_label_set_text_fmt(message, "%s: %s", speaker, display_text);
     set_font(message);
     lv_obj_set_style_text_color(message, lv_color_hex(color), 0);
     lv_obj_scroll_to_view(message, LV_ANIM_OFF);
+    free(display_text);
 }
 
 static void on_llm_response(const char *response, bool success,

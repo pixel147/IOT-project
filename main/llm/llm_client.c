@@ -50,7 +50,7 @@ const char *LLM_EMOTION_PROMPTS[] = {
 
 static const char *DEFAULT_SYSTEM_PROMPT =
     "你是一个温暖、善解人意的情绪陪伴助手，名字叫「小守」。"
-    "请用简洁自然的中文回复，像朋友聊天一样，每次回复控制在 2-4 句话。";
+    "请用常用简体中文简短回复，每次不超过两句；不用生僻字、繁体字、表情和特殊符号。";
 
 /* ============================================================
  * 内部常量
@@ -340,7 +340,7 @@ esp_err_t llm_chat_ex(const char *user_message,
 
     if (out_http_code) *out_http_code = (ret == ESP_OK) ? 200 : 0;
 
-    ESP_LOGI(TAG, "Chat done: %lld ms, turn=%d", dt, s_ctx.turn_count);
+    ESP_LOGI(TAG, "Chat done: %lld ms, turn=%d", dt / 1000, s_ctx.turn_count);
 
     unlock();
     return ret;
@@ -412,8 +412,8 @@ esp_err_t llm_chat_async(const char *user_message,
         return ESP_ERR_NO_MEM;
     }
 
-    if (xTaskCreate(async_task, "llm_async", ASYNC_STACK,
-                    ctx, ASYNC_PRIO, NULL) != pdPASS) {
+    if (xTaskCreatePinnedToCore(async_task, "llm_async", ASYNC_STACK,
+                                ctx, ASYNC_PRIO, NULL, 0) != pdPASS) {
         free(ctx->message);
         free(ctx);
         lock(); s_ctx.busy = false; unlock();
@@ -463,8 +463,5 @@ bool llm_get_last_emotion(int *cls, float *conf)
 
 bool llm_is_busy(void)
 {
-    lock();
-    bool b = s_ctx.busy;
-    unlock();
-    return b;
+    return __atomic_load_n(&s_ctx.busy, __ATOMIC_ACQUIRE);
 }

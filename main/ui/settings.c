@@ -121,7 +121,7 @@ static void show_connect_dialog(const char *ssid)
 
     lv_obj_t *ssid_label = lv_label_create(card);
     lv_label_set_text_fmt(ssid_label, "%s", ssid);
-    font_en(ssid_label);
+    font_zh(ssid_label);
     lv_obj_set_style_text_color(ssid_label, lv_color_hex(0xC9D1D9), 0);
 
     /* 密码输入 */
@@ -225,8 +225,10 @@ static void scan_task(void *arg)
         .scan_time = { .active = { .min = 100, .max = 300 } },
     };
 
-    if (esp_wifi_scan_start(&scan_cfg, true) != ESP_OK) {
-        ESP_LOGW(TAG, "Scan start failed");
+    esp_err_t scan_ret = esp_wifi_scan_start(&scan_cfg, true);
+    if (scan_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Scan start failed: %s (%d)",
+                 esp_err_to_name(scan_ret), scan_ret);
         if (lvgl_port_lock(-1)) {
             lv_label_set_text(s_status, "扫描失败（WiFi 未就绪）");
             lvgl_port_unlock();
@@ -274,16 +276,16 @@ static void scan_task(void *arg)
                     /* 标签 */
                     lv_obj_t *label = lv_label_create(btn);
                     if (is_saved) {
-                        lv_label_set_text_fmt(label, " %s  " LV_SYMBOL_WIFI "  %s  %ddBm",
-                                              rssi_bars(aps[i].rssi),
-                                              aps[i].ssid, aps[i].rssi);
+                        lv_label_set_text_fmt(label, " %s  %s  %ddBm",
+                                               rssi_bars(aps[i].rssi),
+                                               aps[i].ssid, aps[i].rssi);
                     } else {
                         lv_label_set_text_fmt(label, " %s  %s  %ddBm",
                                               rssi_bars(aps[i].rssi),
                                               aps[i].ssid, aps[i].rssi);
                     }
                     lv_obj_set_style_text_color(label, lv_color_hex(0xC9D1D9), 0);
-                    font_en(label);
+                    font_zh(label);
                     lv_obj_center(label);
                 }
                 free(aps);

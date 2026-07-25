@@ -91,9 +91,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             wifi_event_sta_disconnected_t *d =
                 (wifi_event_sta_disconnected_t *)event_data;
-            ESP_LOGW(TAG, "Disconnected (reason=%d), reconnecting…", d->reason);
             set_status(WIFI_STATUS_DISCONNECTED);
-            esp_wifi_connect();
+            if (s_auto_connect) {
+                ESP_LOGW(TAG, "Disconnected (reason=%d), reconnecting…", d->reason);
+                esp_wifi_connect();
+            } else {
+                ESP_LOGI(TAG, "Disconnected (reason=%d), staying idle", d->reason);
+            }
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)event_data;
@@ -129,6 +133,7 @@ static esp_err_t apply_and_start(const char *ssid, const char *password)
     esp_wifi_stop();
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "set mode");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &cfg), TAG, "set config");
+    s_auto_connect = true;
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
 
     ESP_LOGI(TAG, "Connecting to %s…", ssid);
@@ -217,8 +222,8 @@ esp_err_t wifi_connect(const char *ssid, const char *password)
     memcpy(s_pending_pass, password, n);
     s_pending_pass[n] = '\0';
 
-    /* 清除之前的失败位 + 启用自动连接 */
-    s_auto_connect = true;
+    /* 清除之前的连接结果；STA 启动前才启用自动连接。 */
+    s_auto_connect = false;
     if (s_evt) xEventGroupClearBits(s_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
     return apply_and_start(ssid, password);
@@ -227,6 +232,8 @@ esp_err_t wifi_connect(const char *ssid, const char *password)
 void wifi_disconnect(void)
 {
     if (!s_inited) return;
+    s_auto_connect = false;
+    if (s_evt) xEventGroupClearBits(s_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
     ESP_LOGI(TAG, "Disconnecting…");
     esp_wifi_disconnect();
     esp_wifi_stop();
@@ -247,6 +254,17 @@ wifi_status_t wifi_get_status(void)
 bool wifi_is_connected(void)
 {
     return wifi_get_status() == WIFI_STATUS_CONNECTED;
+}
+
+esp_err_t wifi_wait_connected(uint32_t timeout_ms)
+{
+    if (!s_evt) return ESP_ERR_INVALID_STATE;
+    if (wifi_is_connected()) return ESP_OK;
+
+    TickType_t ticks = (timeout_ms == 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    EventBits_t bits = xEventGroupWaitBits(s_evt, WIFI_CONNECTED_BIT,
+                                           pdFALSE, pdFALSE, ticks);
+    return (bits & WIFI_CONNECTED_BIT) ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 esp_err_t wifi_get_ip(char *buf, size_t size)

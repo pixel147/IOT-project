@@ -13,22 +13,26 @@
 #include "face_detect_wrapper.hpp"
 #include "emotion_espdl.hpp"
 #include "wifi.h"
-/* wifi_credentials.h removed — credentials now saved to NVS at runtime */
+#include "wifi_credentials.h"
 #include "llm_client.h"
-#include "slave_ota.h"
 
 #include <string.h>
 
-/* ---- 凭据配置（运行时通过设置页输入，NVS 持久化） ---- */
-#define LLM_API_KEY     "sk-34520ec05ed64a2b8263676ad3b83aa1"
+/* ---- 凭据配置 ---- */
+#define WIFI_SSID       APP_WIFI_SSID
+#define WIFI_PASSWORD   APP_WIFI_PASSWORD
+#define LLM_API_KEY     APP_LLM_API_KEY
 #define LLM_BASE_URL    LLM_BASE_DEEPSEEK
-#define LLM_MODEL_NAME  LLM_MODEL_DEEPSEEK_CHAT
+#define LLM_MODEL_NAME  LLM_MODEL_DEEPSEEK_V4_FLASH
 
 static const char *TAG = "MAIN";
 
 #define CAM_WIDTH   640
 #define CAM_HEIGHT  480
 #define FRAME_BYTES (640 * 480 * 2)
+#define PREVIEW_INTERVAL_US     66667
+#define FACE_DETECT_INTERVAL_US 250000
+#define FACE_DETECT_BUSY_INTERVAL_US 500000
 
 /*
  * 三缓冲防撕裂：
@@ -42,6 +46,8 @@ static uint8_t *s_fb_cap[2] = {NULL, NULL};
 static uint8_t *s_fb_disp = NULL;
 static volatile int s_ready_idx = -1;
 static uint32_t s_frame_w = 0, s_frame_h = 0, s_frame_stride = 0;
+static int64_t s_last_preview_us = 0;
+static int64_t s_last_face_detect_us = 0;
 
 /* ---- 共享推理结果 ---- */
 static face_detect_results_t s_ai_faces;
@@ -83,8 +89,7 @@ static void on_icon_settings(lv_event_t *e)
     (void)e;
     if (lvgl_port_lock(-1)) {
         lv_screen_load(s_settings_scr);
-        /* 不自动扫描 — 用户点扫描按钮时手动触发，
-           此时 ESP-Hosted SDIO 链路已完全建立 */
+        ui_settings_scan_wifi();
         lvgl_port_unlock();
     }
 }
@@ -133,6 +138,14 @@ static void on_camera_frame(const uint8_t *buf, uint32_t len,
 
     if (!s_fb_disp) return;
 
+    int64_t now = esp_timer_get_time();
+    bool preview_due = now - s_last_preview_us >= PREVIEW_INTERVAL_US;
+    int64_t face_detect_interval = llm_is_busy()
+        ? FACE_DETECT_BUSY_INTERVAL_US : FACE_DETECT_INTERVAL_US;
+    bool face_detect_due =
+        now - s_last_face_detect_us >= face_detect_interval;
+    if (!preview_due && !face_detect_due) return;
+
     if (lvgl_port_lock(-1)) {
         int ridx = s_ready_idx;
         if (ridx >= 0 && s_fb_cap[ridx]) {
@@ -141,15 +154,18 @@ static void on_camera_frame(const uint8_t *buf, uint32_t len,
                             ESP_CACHE_MSYNC_FLAG_INVALIDATE);
             memcpy(s_fb_disp, s_fb_cap[ridx], stride * h);
 
-            /* 人脸检测：LLM 请求期间跳过，避免 PSRAM 并发冲突 */
-            face_detect_results_t faces = {0};
-            if (!llm_is_busy()) {
-                size_t fb_sz = (stride * h + 63) & ~63;
-                esp_cache_msync(s_fb_disp, fb_sz,
-                    ESP_CACHE_MSYNC_FLAG_TYPE_DATA |
-                    ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+            face_detect_results_t faces;
+            __sync_synchronize();
+            faces = s_ai_faces;
+            if (face_detect_due) {
+                faces = (face_detect_results_t){0};
                 face_detect_run((uint16_t *)s_fb_disp, w, h, &faces);
+                s_ai_faces = faces;
+                __sync_synchronize();
+                s_last_face_detect_us = now;
             }
+
+            /* 人脸检测（直接在当前帧上做，与原始架构一致） */
 
             /* 绘制人脸框（s_ai_classes 由 emotion_task 更新） */
             static const uint8_t emo_colors[7][3] = {
@@ -165,7 +181,7 @@ static void on_camera_frame(const uint8_t *buf, uint32_t len,
                                  emo_colors[s_ai_classes[i]][2], 3);
             }
 
-            /* 情绪徽章（Monitor + Chat 双屏同步） */
+            /* 情绪徽章 */
             if (faces.count > 0) {
                 ui_update_emotion(s_ai_classes[0], s_ai_confs[0]);
                 ui_chat_update_emotion(s_ai_classes[0], s_ai_confs[0]);
@@ -177,8 +193,10 @@ static void on_camera_frame(const uint8_t *buf, uint32_t len,
             s_ai_faces = faces;
             __sync_synchronize();
 
-            ui_update_camera_preview(s_fb_disp, w, h, stride);
-            lv_refr_now(NULL);
+            if (preview_due) {
+                ui_update_camera_preview(s_fb_disp, w, h, stride);
+                s_last_preview_us = now;
+            }
         }
         lvgl_port_unlock();
     }
@@ -243,6 +261,10 @@ static void provide_emotion(int *cls, float *conf)
 
 /* ---- LLM 建议任务（每30秒生成陪伴提示） ---- */
 #if 0
+#define LLM_SUGGESTION_INTERVAL_MS 30000
+#define LLM_PROMPT_BUF_SIZE 256
+#define LLM_RESP_BUF_SIZE   512
+
 static void llm_suggestion_task(void *arg)
 {
     (void)arg;
@@ -284,64 +306,6 @@ static void llm_suggestion_task(void *arg)
 
 /* ---- 主函数 ---- */
 #endif
-
-/* ---- 延迟 ping 回调（WiFi 连接后 10s 执行） ---- */
-static void delayed_ping_cb(void *arg)
-{
-    (void)arg;
-    int ms = 0;
-    esp_err_t ret = wifi_ping_test(&ms);
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "NET CHECK: bilibili.com OK, latency=%d ms", ms);
-    } else {
-        ESP_LOGW(TAG, "NET CHECK: bilibili.com FAILED");
-    }
-    if (lvgl_port_lock(-1)) {
-        ui_set_system_status(ret == ESP_OK ? "网络通畅" : "网络不通");
-        lvgl_port_unlock();
-    }
-}
-
-/* ---- WiFi 状态回调：连接成功 → 自动初始化 LLM ---- */
-static void on_wifi_status(wifi_status_t status)
-{
-    if (status == WIFI_STATUS_CONNECTED) {
-        ESP_LOGI(TAG, "WiFi connected — testing connectivity…");
-
-        /* 初始化大模型 */
-        llm_config_t llm_cfg = {
-            .base_url     = LLM_BASE_URL,
-            .api_key      = LLM_API_KEY,
-            .model        = LLM_MODEL_NAME,
-            .max_tokens   = LLM_DEFAULT_MAX_TOKENS,
-            .temperature  = LLM_DEFAULT_TEMPERATURE,
-            .timeout_ms   = LLM_DEFAULT_TIMEOUT_MS,
-        };
-        esp_err_t llm_ret = llm_init(&llm_cfg);
-        if (llm_ret == ESP_OK) {
-            llm_set_emotion_provider(provide_emotion);
-        }
-
-        if (lvgl_port_lock(-1)) {
-            ui_set_system_status(llm_ret == ESP_OK
-                ? "大模型：已就绪" : "大模型：初始化失败");
-            lvgl_port_unlock();
-        }
-
-        /* 10 秒后 ping 验证网络质量 */
-        const esp_timer_create_args_t ping_args = {
-            .callback = delayed_ping_cb, .name = "ping10s"
-        };
-        esp_timer_handle_t pt = NULL;
-        esp_timer_create(&ping_args, &pt);
-        esp_timer_start_once(pt, 10 * 1000 * 1000);
-    } else if (status == WIFI_STATUS_DISCONNECTED) {
-        if (lvgl_port_lock(-1)) {
-            ui_set_system_status("WiFi：已断开");
-            lvgl_port_unlock();
-        }
-    }
-}
 
 void app_main(void)
 {
@@ -434,27 +398,15 @@ void app_main(void)
     }
     lvgl_port_unlock();
 
-    /* 5. 初始化 WiFi 栈 + 注册状态回调 + 尝试自动连接 */
-    wifi_init();
-    wifi_set_status_callback(on_wifi_status);
-    if (wifi_has_saved_credentials()) {
-        char saved_ssid[33];
-        wifi_get_saved_ssid(saved_ssid, sizeof(saved_ssid));
-        ESP_LOGI(TAG, "Auto-connecting with saved credentials: %s", saved_ssid);
-        wifi_connect(NULL, NULL);
+    /* 5. 启动 WiFi（非阻塞，立即返回） */
+    ESP_LOGI(TAG, "Initializing WiFi");
+    esp_err_t wifi_init_ret = wifi_init();
+    esp_err_t wifi_connect_ret = wifi_init_ret;
+    if (wifi_init_ret == ESP_OK) {
+        ESP_LOGI(TAG, "Connecting WiFi to %s…", WIFI_SSID);
+        wifi_connect_ret = wifi_connect(WIFI_SSID, WIFI_PASSWORD);
     } else {
-        ESP_LOGI(TAG, "No saved WiFi credentials — waiting for user config");
-        ui_set_system_status("WiFi：未配置");
-    }
-
-    /* 6a. C6 固件检查 / OTA 升级（自动版本比对，已最新则跳过） */
-    esp_err_t ota_ret = slave_ota_perform();
-    if (ota_ret == ESP_OK) {
-        ESP_LOGI(TAG, "C6 firmware OK (up-to-date or updated)");
-    } else if (ota_ret == ESP_ERR_NOT_FOUND) {
-        ESP_LOGI(TAG, "No slave_fw partition — skipping C6 check");
-    } else {
-        ESP_LOGW(TAG, "C6 OTA: %s", esp_err_to_name(ota_ret));
+        ESP_LOGE(TAG, "WiFi initialization failed: %d", wifi_init_ret);
     }
 
     /* 6. 启动 MIPI-CSI 摄像头 */
@@ -466,8 +418,44 @@ void app_main(void)
     ui_set_system_status(cam_ret == ESP_OK ? "摄像头：已连接" : "摄像头：失败");
     lvgl_port_unlock();
 
+    /* 7. 等 WiFi 连接（后台进行，不阻塞摄像头） */
+    ui_set_system_status("WiFi 连接中…");
+    esp_err_t wifi_ret = (wifi_connect_ret == ESP_OK)
+        ? wifi_wait_connected(15000) : wifi_connect_ret;
+    lvgl_port_lock(-1);
+    if (wifi_ret == ESP_OK) {
+        ui_set_system_status("WiFi：已连接");
+        ESP_LOGI(TAG, "WiFi connected");
+
+        /* 初始化大模型 */
+        llm_config_t llm_cfg = {
+            .base_url     = LLM_BASE_URL,
+            .api_key      = LLM_API_KEY,
+            .model        = LLM_MODEL_NAME,
+            .max_tokens   = LLM_DEFAULT_MAX_TOKENS,
+            .temperature  = LLM_DEFAULT_TEMPERATURE,
+            .timeout_ms   = LLM_DEFAULT_TIMEOUT_MS,
+        };
+        esp_err_t llm_ret = llm_init(&llm_cfg);
+        if (llm_ret == ESP_OK) {
+            /* 注册情绪提供者（Pull 模式：每次 chat 前实时拉取） */
+            llm_set_emotion_provider(provide_emotion);
+            ui_set_system_status("大模型：已就绪");
+            ESP_LOGI(TAG, "LLM ready: %s", LLM_MODEL_NAME);
+        } else {
+            ui_set_system_status("大模型：初始化失败");
+            ESP_LOGW(TAG, "LLM init failed: %d", llm_ret);
+        }
+    } else {
+        ui_set_system_status("WiFi：连接失败");
+        ESP_LOGW(TAG, "WiFi timeout or failed");
+    }
+    lvgl_port_unlock();
+
     ESP_LOGI(TAG, "System ready — camera preview + UI running");
 
-    /* 7. 启动情绪识别任务（独立于相机回调，每2秒一次） */
+    /* 8. 启动情绪识别任务（独立于相机回调，每2秒一次） */
     xTaskCreatePinnedToCore(emotion_task, "emotion", 16384, NULL, 3, NULL, 0);
+
+    /* 9. 启动 LLM 建议任务（每30秒生成陪伴提示） */
 }

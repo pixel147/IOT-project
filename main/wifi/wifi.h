@@ -75,6 +75,13 @@ void wifi_disconnect(void);
 
 wifi_status_t wifi_get_status(void);
 bool          wifi_is_connected(void);
+
+/**
+ * @brief 阻塞等待 WiFi 连接成功或超时
+ * @param timeout_ms 等待超时（毫秒），0 表示不等待
+ * @return ESP_OK 已连接 / ESP_ERR_TIMEOUT 超时
+ */
+esp_err_t     wifi_wait_connected(uint32_t timeout_ms);
 esp_err_t     wifi_get_ip(char *buf, size_t size);
 
 /** 注册状态回调（传 NULL 取消） */
