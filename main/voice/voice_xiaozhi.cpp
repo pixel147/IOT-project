@@ -14,6 +14,8 @@
 #include "esp_opus_enc.h"
 #include "esp_websocket_client.h"
 #include "esp_heap_caps.h"
+#include "esp_http_client.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -60,12 +62,24 @@ struct VoiceState {
     char headers[720] = {};
     int protocol_version = 1;
     std::atomic<bool> manual_start_requested{false};
+    std::atomic<bool> ota_done{false};
+    int post_wake_skip = 0;
     bool listening = false;
     int silence_frames = 0;
     std::vector<int16_t> opus_pcm;
 };
 
 VoiceState s_voice;
+
+/* Get the C6 coprocessor's actual WiFi MAC (not the P4's base MAC).
+ * Fall back to base MAC if wifi is not yet initialized. */
+static void get_wifi_mac(uint8_t mac[6])
+{
+    esp_err_t err = esp_wifi_get_mac(WIFI_IF_STA, mac);
+    if (err != ESP_OK || (mac[0] == 0 && mac[1] == 0 && mac[2] == 0)) {
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    }
+}
 
 static void stop_listening(const char *status)
 {
@@ -257,6 +271,22 @@ static void voice_task(void *arg)
     (void)arg;
 
     while (1) {  /* Outer loop: reconnect forever */
+        /* OTA registration once per boot (background task, HTTPS) */
+        if (!s_voice.ota_done.exchange(true)) {
+            ESP_LOGI(TAG, "Starting OTA registration...");
+            esp_err_t oret = xiaozhi_ota_register();
+            ESP_LOGI(TAG, "OTA registration: %s", esp_err_to_name(oret));
+            /* Refresh URL/token from NVS (OTA may have updated them) */
+            nvs_handle_t ws_nvs;
+            if (nvs_open("websocket", NVS_READONLY, &ws_nvs) == ESP_OK) {
+                size_t sz = sizeof(s_voice.url);
+                nvs_get_str(ws_nvs, "url", s_voice.url, &sz);
+                sz = sizeof(s_voice.token);
+                nvs_get_str(ws_nvs, "token", s_voice.token, &sz);
+                nvs_close(ws_nvs);
+            }
+        }
+
         /* Settle delay before WebSocket connect */
         vTaskDelay(pdMS_TO_TICKS(500));
 
@@ -334,10 +364,17 @@ static void voice_task(void *arg)
                 s_voice.listening = true;
                 s_voice.silence_frames = 0;
                 s_voice.opus_pcm.clear();
+                s_voice.post_wake_skip = 5;  /* Drop ~300ms to avoid sending wake-word audio */
                 ui_chat_voice_set_status("Voice: wake word detected");
             }
             /* Only send audio data when actively listening */
             if (!s_voice.listening || result->data_size == 0) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+            /* Skip a few frames after wake word to avoid sending wake-word audio */
+            if (s_voice.post_wake_skip > 0) {
+                s_voice.post_wake_skip--;
                 vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
             }
@@ -430,11 +467,11 @@ static void voice_hardware_init_task(void *arg)
         ESP_LOGI(TAG, "Generated UUID from MAC: %s", s_voice.uuid);
     }
 
-    /* ---- Device ID (Wi-Fi STA MAC) ---- */
+    /* ---- Device ID (C6 Wi-Fi STA MAC) ---- */
     ESP_LOGI(TAG, "D_INIT: step1 device_id");
     {
         uint8_t mac[6];
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        get_wifi_mac(mac);
         snprintf(s_voice.device_id, sizeof(s_voice.device_id),
                  "%02x:%02x:%02x:%02x:%02x:%02x",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -589,14 +626,121 @@ extern "C" esp_err_t voice_xiaozhi_start_listening(void)
     return ESP_OK;
 }
 
-/* ---- OTA / device activation ----
- *  Stubbed — the MCP handshake (handled above) is the critical piece the
- *  server waits on.  Full OTA registration comes in a follow-up when the
- *  esp_http_client dependency has its own background task.
- */
+/* ---- OTA / device activation (background task, own stack) ---- */
 extern "C" esp_err_t xiaozhi_ota_register(void)
 {
-    ESP_LOGW(TAG, "OTA register not yet implemented (stub)");
-    return ESP_ERR_NOT_SUPPORTED;
+    uint8_t raw_mac[6];
+    get_wifi_mac(raw_mac);
+    char mac[18] = {};
+    snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+             raw_mac[0], raw_mac[1], raw_mac[2], raw_mac[3], raw_mac[4], raw_mac[5]);
+
+    /* Build device-info JSON */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "mac", mac);
+
+    char uuid[40] = {};
+    nvs_handle_t h;
+    if (nvs_open("board", NVS_READONLY, &h) == ESP_OK) {
+        size_t sz = sizeof(uuid);
+        nvs_get_str(h, "uuid", uuid, &sz);
+        nvs_close(h);
+    }
+    if (uuid[0]) cJSON_AddStringToObject(root, "uuid", uuid);
+    cJSON_AddStringToObject(root, "board", "esp-p4-function-ev-board");
+    cJSON_AddStringToObject(root, "version", "2.4.0");
+    {
+        cJSON *chip = cJSON_AddObjectToObject(root, "chip");
+        cJSON_AddStringToObject(chip, "model", "ESP32-P4");
+        cJSON_AddNumberToObject(chip, "cores", 2);
+    }
+    {
+        cJSON *flash = cJSON_AddObjectToObject(root, "flash");
+        cJSON_AddNumberToObject(flash, "size", 16777216);
+    }
+    {
+        cJSON *psram = cJSON_AddObjectToObject(root, "psram");
+        cJSON_AddNumberToObject(psram, "size", 33554432);
+    }
+    {
+        cJSON *app = cJSON_AddObjectToObject(root, "app");
+        cJSON_AddStringToObject(app, "name", "emotion_chat");
+        cJSON_AddStringToObject(app, "version", "2.4.0");
+        cJSON_AddStringToObject(app, "idf_version", "v5.5.4");
+        cJSON_AddStringToObject(app, "compile_time", __DATE__ " " __TIME__);
+    }
+
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!body) return ESP_ERR_NO_MEM;
+
+    ESP_LOGI(TAG, "OTA register: POST to OTA server (MAC=%s)", mac);
+
+    esp_http_client_config_t cfg = {};
+    cfg.url = "https://api.tenclass.net/xiaozhi/ota/";
+    cfg.method = HTTP_METHOD_POST;
+    cfg.timeout_ms = 15000;
+    cfg.buffer_size = 2048;
+    cfg.buffer_size_tx = 1024;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) { free(body); return ESP_ERR_NO_MEM; }
+
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Device-Id", mac);
+    if (uuid[0]) esp_http_client_set_header(client, "Client-Id", uuid);
+    esp_http_client_set_header(client, "User-Agent", "esp-p4-function-ev-board/2.4.0");
+
+    int body_len = strlen(body);
+    esp_err_t err = esp_http_client_open(client, body_len);
+    if (err == ESP_OK) {
+        esp_http_client_write(client, body, body_len);
+        int64_t content_len = esp_http_client_fetch_headers(client);
+        ESP_LOGI(TAG, "OTA status=%d content=%lld",
+                 esp_http_client_get_status_code(client), content_len);
+
+        if (content_len > 0) {
+            char resp[2048] = {};
+            int read_len = esp_http_client_read(client, resp, sizeof(resp) - 1);
+            if (read_len > 0) {
+                ESP_LOGI(TAG, "OTA response (len=%d): %.*s", read_len, read_len, resp);
+
+                /* Parse response for websocket config */
+                cJSON *r = cJSON_Parse(resp);
+                if (r) {
+                    cJSON *ws = cJSON_GetObjectItemCaseSensitive(r, "websocket");
+                    if (cJSON_IsObject(ws)) {
+                        nvs_handle_t nvs;
+                        if (nvs_open("websocket", NVS_READWRITE, &nvs) == ESP_OK) {
+                            cJSON *val;
+                            val = cJSON_GetObjectItemCaseSensitive(ws, "url");
+                            if (cJSON_IsString(val))
+                                nvs_set_str(nvs, "url", val->valuestring);
+                            val = cJSON_GetObjectItemCaseSensitive(ws, "token");
+                            if (cJSON_IsString(val))
+                                nvs_set_str(nvs, "token", val->valuestring);
+                            val = cJSON_GetObjectItemCaseSensitive(ws, "version");
+                            if (cJSON_IsNumber(val))
+                                nvs_set_i32(nvs, "version", val->valueint);
+                            nvs_commit(nvs);
+                            nvs_close(nvs);
+                            ESP_LOGI(TAG, "WebSocket credentials saved to NVS");
+                        }
+                    } else {
+                        ESP_LOGW(TAG, "No websocket config in OTA response");
+                    }
+                    cJSON_Delete(r);
+                }
+            }
+        }
+    } else {
+        ESP_LOGW(TAG, "OTA HTTP open failed: %s", esp_err_to_name(err));
+    }
+
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    free(body);
+    return err;
 }
 }
