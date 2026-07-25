@@ -10,11 +10,12 @@
 #include "esp_codec_dev_defaults.h"
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_mac.h"
 #include "esp_opus_enc.h"
-#include "esp_websocket_client.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
+#include "mqtt_client.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -22,22 +23,32 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include <mbedtls/aes.h>
+
 #include <cJSON.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <atomic>
+#include <string>
 #include <vector>
 
 #include "chat.h"
+
+/* lwip socket API for UDP audio channel */
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
 
 namespace {
 
 constexpr const char *TAG = "XIAOZHI_VOICE";
 constexpr int kSampleRate = 16000;
-constexpr int kOpusFrameSamples = 960;  // Official XiaoZhi protocol: 60 ms at 16 kHz.
+constexpr int kOpusFrameSamples = 960;  // 60 ms at 16 kHz.
 constexpr EventBits_t kServerHello = BIT0;
-constexpr EventBits_t kWebSocketConnected = BIT1;
+constexpr EventBits_t kMqttConnected = BIT1;
+constexpr int kUdpHeaderLen = 16;
+constexpr int kAesKeyLen = 16;
 
 struct VoiceState {
     esp_codec_dev_handle_t codec = nullptr;
@@ -52,21 +63,33 @@ struct VoiceState {
     esp_afe_sr_data_t *afe = nullptr;
     void *opus = nullptr;
     int opus_output_size = 0;
-    esp_websocket_client_handle_t websocket = nullptr;
     EventGroupHandle_t events = nullptr;
     char session_id[96] = {};
-    char url[256] = {};
-    char token[256] = {};
     char uuid[96] = {};
     char device_id[18] = {};
-    char headers[720] = {};
-    int protocol_version = 1;
     std::atomic<bool> manual_start_requested{false};
     std::atomic<bool> ota_done{false};
     int post_wake_skip = 0;
     bool listening = false;
     int silence_frames = 0;
     std::vector<int16_t> opus_pcm;
+
+    /* MQTT signaling */
+    esp_mqtt_client_handle_t mqtt = nullptr;
+    char mqtt_endpoint[128] = {};
+    char mqtt_client_id[128] = {};
+    char mqtt_username[128] = {};
+    char mqtt_password[128] = {};
+    char mqtt_publish_topic[64] = {};
+
+    /* UDP audio channel (from server hello) */
+    int udp_fd = -1;
+    char udp_server[64] = {};
+    int udp_port = 0;
+    uint8_t aes_key[kAesKeyLen] = {};
+    uint8_t aes_nonce[kAesKeyLen] = {};
+    mbedtls_aes_context aes_ctx;
+    uint32_t local_sequence = 0;
 };
 
 VoiceState s_voice;
@@ -81,14 +104,38 @@ static void get_wifi_mac(uint8_t mac[6])
     }
 }
 
+/* ---- MQTT + UDP protocol (replaces WebSocket) ---- */
+
+/* Send a JSON string via MQTT publish. */
+static void send_text(const char *json)
+{
+    if (s_voice.mqtt && s_voice.mqtt_publish_topic[0]) {
+        esp_mqtt_client_publish(s_voice.mqtt, s_voice.mqtt_publish_topic,
+                                json, 0, 1, 0);
+    }
+}
+
+/* Hex decode helper for AES key/nonce from server hello. */
+static int hex_decode(const char *hex, uint8_t *out, int max_out)
+{
+    int len = 0;
+    while (*hex && *(hex + 1) && len < max_out) {
+        unsigned int b;
+        sscanf(hex, "%2x", &b);
+        out[len++] = (uint8_t)b;
+        hex += 2;
+    }
+    return len;
+}
+
 static void stop_listening(const char *status)
 {
-    if (s_voice.listening && esp_websocket_client_is_connected(s_voice.websocket) && s_voice.session_id[0]) {
-        char message[160];
-        snprintf(message, sizeof(message),
+    if (s_voice.listening && s_voice.session_id[0]) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
                  "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"stop\"}",
                  s_voice.session_id);
-        esp_websocket_client_send_text(s_voice.websocket, message, strlen(message), portMAX_DELAY);
+        send_text(msg);
     }
     s_voice.listening = false;
     s_voice.silence_frames = 0;
@@ -97,15 +144,14 @@ static void stop_listening(const char *status)
     ui_chat_voice_set_status(status);
 }
 
-static void send_opus_frame(const int16_t *pcm)
+/* Encrypt and send one Opus frame over UDP with AES-128-CTR.
+ * Nonce format: [2B const][2B len][4B const][4B timestamp][4B sequence] */
+static void udp_send_opus(const int16_t *pcm)
 {
-    if (!s_voice.listening || !esp_websocket_client_is_connected(s_voice.websocket)) {
-        return;
-    }
-
+    /* Opus encode first */
     std::vector<uint8_t> output(s_voice.opus_output_size);
     esp_audio_enc_in_frame_t input = {
-        .buffer = reinterpret_cast<uint8_t *>(const_cast<int16_t *>(pcm)),
+        .buffer = const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(pcm)),
         .len = static_cast<uint32_t>(kOpusFrameSamples * sizeof(int16_t)),
     };
     esp_audio_enc_out_frame_t encoded = {
@@ -113,157 +159,260 @@ static void send_opus_frame(const int16_t *pcm)
         .len = static_cast<uint32_t>(output.size()),
         .encoded_bytes = 0,
     };
-    if (esp_opus_enc_process(s_voice.opus, &input, &encoded) == ESP_AUDIO_ERR_OK &&
-        encoded.encoded_bytes > 0) {
-        esp_websocket_client_send_bin(s_voice.websocket, reinterpret_cast<const char *>(output.data()),
-                                      encoded.encoded_bytes, portMAX_DELAY);
+    if (esp_opus_enc_process(s_voice.opus, &input, &encoded) != ESP_AUDIO_ERR_OK ||
+        encoded.encoded_bytes == 0) return;
+
+    /* Build nonce: reuse aes_nonce bytes 0-1 and 4-7 with dynamic fields */
+    uint8_t nonce[kAesKeyLen];
+    memcpy(nonce, s_voice.aes_nonce, 2);                     // bytes 0-1: constant
+    nonce[2] = (encoded.encoded_bytes >> 8) & 0xff;          // bytes 2-3: payload_len
+    nonce[3] = encoded.encoded_bytes & 0xff;
+    memcpy(nonce + 4, s_voice.aes_nonce + 4, 4);             // bytes 4-7: constant
+    uint32_t ts = esp_timer_get_time() / 1000;               // ms timestamp
+    nonce[8] = (ts >> 24) & 0xff;  nonce[9] = (ts >> 16) & 0xff;
+    nonce[10] = (ts >> 8) & 0xff;  nonce[11] = ts & 0xff;    // bytes 8-11: timestamp
+    uint32_t seq = s_voice.local_sequence++;
+    nonce[12] = (seq >> 24) & 0xff; nonce[13] = (seq >> 16) & 0xff;
+    nonce[14] = (seq >> 8) & 0xff;  nonce[15] = seq & 0xff;  // bytes 12-15: sequence
+
+    /* AES-128-CTR encrypt the Opus payload */
+    size_t enc_len = encoded.encoded_bytes;
+    std::vector<uint8_t> cipher(enc_len);
+    uint8_t stream_block[16] = {};
+    size_t offset = 0;
+    mbedtls_aes_crypt_ctr(&s_voice.aes_ctx, enc_len, &offset,
+                          nonce, stream_block, output.data(), cipher.data());
+
+    /* Send: [16B nonce][encrypted payload] */
+    std::vector<uint8_t> packet;
+    packet.reserve(kUdpHeaderLen + enc_len);
+    packet.insert(packet.end(), nonce, nonce + kUdpHeaderLen);
+    packet.insert(packet.end(), cipher.begin(), cipher.end());
+
+    if (s_voice.udp_fd >= 0) {
+        struct sockaddr_in dest = {};
+        dest.sin_family = AF_INET;
+        dest.sin_port = htons(s_voice.udp_port);
+        inet_pton(AF_INET, s_voice.udp_server, &dest.sin_addr);
+        sendto(s_voice.udp_fd, packet.data(), packet.size(), 0,
+               (struct sockaddr *)&dest, sizeof(dest));
     }
 }
 
-static void websocket_event(void *, esp_event_base_t, int32_t event_id, void *event_data)
+/* MQTT event handler */
+static void mqtt_event_handler(void *arg, esp_event_base_t, int32_t event_id, void *edata)
 {
-    auto *event = static_cast<esp_websocket_event_data_t *>(event_data);
-    if (event_id == WEBSOCKET_EVENT_CONNECTED) {
-        xEventGroupSetBits(s_voice.events, kWebSocketConnected);
-        return;
-    }
-    if (event_id == WEBSOCKET_EVENT_ERROR) {
-        ESP_LOGI(TAG, "WS_EVENT: ERROR");
-        return;
-    }
-    if (event_id == WEBSOCKET_EVENT_DISCONNECTED) {
+    (void)arg;
+    auto &e = *static_cast<esp_mqtt_event_t *>(edata);
+
+    if (event_id == MQTT_EVENT_CONNECTED) {
+        ESP_LOGI(TAG, "MQTT connected");
+        xEventGroupSetBits(s_voice.events, kMqttConnected);
+
+    } else if (event_id == MQTT_EVENT_DISCONNECTED) {
+        ESP_LOGI(TAG, "MQTT disconnected");
         s_voice.listening = false;
         s_voice.session_id[0] = '\0';
-        ESP_LOGI(TAG, "WS_EVENT: DISCONNECTED");
         ui_chat_voice_set_status("Voice: disconnected");
-        return;
-    }
-    if (event_id == WEBSOCKET_EVENT_DATA && event && event->op_code == WS_TRANSPORT_OPCODES_TEXT) {
-        ESP_LOGI(TAG, "WS_EVENT: TEXT len=%d: %.*s", event->data_len, event->data_len, event->data_ptr);
-    } else if (event_id == WEBSOCKET_EVENT_DATA && event && event->op_code == WS_TRANSPORT_OPCODES_BINARY) {
-        ESP_LOGI(TAG, "WS_EVENT: DATA (binary) len=%d", event->data_len);
-        return;
-    } else {
-        return;
-    }
 
-    cJSON *root = cJSON_ParseWithLength(event->data_ptr, event->data_len);
-    if (!root) {
-        ESP_LOGW(TAG, "Ignoring invalid XiaoZhi JSON frame");
-        return;
-    }
-    cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
-    if (cJSON_IsString(type) && strcmp(type->valuestring, "hello") == 0) {
-        cJSON *session = cJSON_GetObjectItemCaseSensitive(root, "session_id");
-        if (cJSON_IsString(session)) {
-            strlcpy(s_voice.session_id, session->valuestring, sizeof(s_voice.session_id));
+    } else if (event_id == MQTT_EVENT_ERROR) {
+        ESP_LOGW(TAG, "MQTT error");
+
+    } else if (event_id == MQTT_EVENT_DATA) {
+        std::string topic(e.topic, e.topic_len);
+        std::string payload(e.data, e.data_len);
+        ESP_LOGD(TAG, "MQTT data on %s: %.*s", topic.c_str(), (int)payload.size(), payload.c_str());
+
+        cJSON *root = cJSON_ParseWithLength(payload.data(), payload.size());
+        if (!root) { ESP_LOGW(TAG, "Ignoring invalid MQTT JSON"); return; }
+
+        cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+        if (!cJSON_IsString(type)) { cJSON_Delete(root); return; }
+        const char *t = type->valuestring;
+
+        if (strcmp(t, "hello") == 0) {
+            cJSON *session = cJSON_GetObjectItemCaseSensitive(root, "session_id");
+            if (cJSON_IsString(session)) {
+                strlcpy(s_voice.session_id, session->valuestring, sizeof(s_voice.session_id));
+            }
+            /* Parse UDP audio config from server hello */
+            cJSON *udp = cJSON_GetObjectItemCaseSensitive(root, "udp");
+            if (cJSON_IsObject(udp)) {
+                cJSON *sv = cJSON_GetObjectItemCaseSensitive(udp, "server");
+                cJSON *pt = cJSON_GetObjectItemCaseSensitive(udp, "port");
+                cJSON *ky = cJSON_GetObjectItemCaseSensitive(udp, "key");
+                cJSON *nc = cJSON_GetObjectItemCaseSensitive(udp, "nonce");
+                if (cJSON_IsString(sv)) strlcpy(s_voice.udp_server, sv->valuestring, sizeof(s_voice.udp_server));
+                if (cJSON_IsNumber(pt))  s_voice.udp_port   = pt->valueint;
+                if (cJSON_IsString(ky))  hex_decode(ky->valuestring, s_voice.aes_key, kAesKeyLen);
+                if (cJSON_IsString(nc))  hex_decode(nc->valuestring, s_voice.aes_nonce, kAesKeyLen);
+                ESP_LOGI(TAG, "UDP config: %s:%d key=%d nonce=%d",
+                         s_voice.udp_server, s_voice.udp_port,
+                         (int)strlen(cJSON_IsString(ky)?ky->valuestring:""),
+                         (int)strlen(cJSON_IsString(nc)?nc->valuestring:""));
+            }
             xEventGroupSetBits(s_voice.events, kServerHello);
-        }
-    } else if (cJSON_IsString(type) && strcmp(type->valuestring, "stt") == 0) {
-        cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
-        if (cJSON_IsString(text) && text->valuestring[0]) {
-            ui_chat_voice_append_user(text->valuestring);
-        }
-    } else if (cJSON_IsString(type) && strcmp(type->valuestring, "tts") == 0) {
-        cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
-        cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
-        /* Only append on sentence_end or stop to avoid duplicate display */
-        if (cJSON_IsString(state) && cJSON_IsString(text) && text->valuestring[0]) {
-            if (strcmp(state->valuestring, "sentence_end") == 0 ||
-                strcmp(state->valuestring, "stop") == 0) {
-                ui_chat_voice_append_assistant(text->valuestring);
+
+        } else if (strcmp(t, "stt") == 0) {
+            cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
+            if (cJSON_IsString(text) && text->valuestring[0]) {
+                ui_chat_voice_append_user(text->valuestring);
+            }
+
+        } else if (strcmp(t, "tts") == 0) {
+            cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
+            cJSON *text = cJSON_GetObjectItemCaseSensitive(root, "text");
+            if (cJSON_IsString(state) && cJSON_IsString(text) && text->valuestring[0]) {
+                if (strcmp(state->valuestring, "sentence_end") == 0 ||
+                    strcmp(state->valuestring, "stop") == 0) {
+                    ui_chat_voice_append_assistant(text->valuestring);
+                }
+            }
+            if (cJSON_IsString(state) && strcmp(state->valuestring, "stop") == 0) {
+                stop_listening("Voice: ready");
+            }
+
+        } else if (strcmp(t, "mcp") == 0) {
+            cJSON *payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
+            cJSON *method = payload ? cJSON_GetObjectItemCaseSensitive(payload, "method") : nullptr;
+            cJSON *msg_id = payload ? cJSON_GetObjectItemCaseSensitive(payload, "id") : nullptr;
+            char mcp_resp[512] = {};
+            if (cJSON_IsString(method)) {
+                int id = cJSON_IsNumber(msg_id) ? msg_id->valueint : 1;
+                if (strcmp(method->valuestring, "initialize") == 0) {
+                    snprintf(mcp_resp, sizeof(mcp_resp),
+                             "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,"
+                             "\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},"
+                             "\"serverInfo\":{\"name\":\"esp32-p4\",\"version\":\"2.4.0\"}}},"
+                             "\"session_id\":\"%s\"}", id, s_voice.session_id);
+                    ESP_LOGI(TAG, "MCP initialize responded");
+                } else if (strcmp(method->valuestring, "tools/list") == 0) {
+                    snprintf(mcp_resp, sizeof(mcp_resp),
+                             "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,"
+                             "\"result\":{\"tools\":[]}},\"session_id\":\"%s\"}",
+                             id, s_voice.session_id);
+                    ESP_LOGI(TAG, "MCP tools/list responded");
+                }
+                if (mcp_resp[0]) send_text(mcp_resp);
             }
         }
-        if (cJSON_IsString(state) && strcmp(state->valuestring, "stop") == 0) {
-            stop_listening("Voice: ready");
-        }
-    } else if (cJSON_IsString(type) && strcmp(type->valuestring, "mcp") == 0) {
-        /* Server-side MCP handshake (Model Context Protocol for capabilities). */
-        cJSON *payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
-        cJSON *method = payload ? cJSON_GetObjectItemCaseSensitive(payload, "method") : nullptr;
-        cJSON *msg_id = payload ? cJSON_GetObjectItemCaseSensitive(payload, "id") : nullptr;
-        if (cJSON_IsString(method) && strcmp(method->valuestring, "initialize") == 0) {
-            int id = cJSON_IsNumber(msg_id) ? msg_id->valueint : 1;
-            char mcp_resp[512] = {};
-            snprintf(mcp_resp, sizeof(mcp_resp),
-                     "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,"
-                     "\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},"
-                     "\"serverInfo\":{\"name\":\"esp32-p4\",\"version\":\"2.4.0\"}}},"
-                     "\"session_id\":\"%s\"}",
-                     id, s_voice.session_id);
-            esp_websocket_client_send_text(s_voice.websocket, mcp_resp, strlen(mcp_resp), portMAX_DELAY);
-            ESP_LOGI(TAG, "MCP initialize responded");
-        } else if (cJSON_IsString(method) && strcmp(method->valuestring, "tools/list") == 0) {
-            int id = cJSON_IsNumber(msg_id) ? msg_id->valueint : 2;
-            char mcp_resp[256] = {};
-            snprintf(mcp_resp, sizeof(mcp_resp),
-                     "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,"
-                     "\"result\":{\"tools\":[]}},\"session_id\":\"%s\"}",
-                     id, s_voice.session_id);
-            esp_websocket_client_send_text(s_voice.websocket, mcp_resp, strlen(mcp_resp), portMAX_DELAY);
-            ESP_LOGI(TAG, "MCP tools/list responded (empty)");
-        }
-    }
-    cJSON_Delete(root);
-}
-
-static void ws_close(void)
-{
-    if (s_voice.websocket) {
-        esp_websocket_client_stop(s_voice.websocket);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        esp_websocket_client_destroy(s_voice.websocket);
-        s_voice.websocket = nullptr;
+        cJSON_Delete(root);
     }
 }
 
-static bool open_xiaozhi_session(const char *wake_word)
+/* Open audio channel: MQTT connect + hello + UDP socket. */
+static bool open_audio_channel(void)
 {
-    ws_close();
-    xEventGroupClearBits(s_voice.events, kServerHello | kWebSocketConnected);
+    /* Clean up previous connection if any */
+    if (s_voice.mqtt) {
+        esp_mqtt_client_stop(s_voice.mqtt);
+        esp_mqtt_client_destroy(s_voice.mqtt);
+        s_voice.mqtt = nullptr;
+    }
+    if (s_voice.udp_fd >= 0) {
+        close(s_voice.udp_fd);
+        s_voice.udp_fd = -1;
+    }
+    xEventGroupClearBits(s_voice.events, kServerHello | kMqttConnected);
     s_voice.session_id[0] = '\0';
+    s_voice.local_sequence = 0;
 
-    ESP_LOGI(TAG, "WS connecting: url=%s token=%s", s_voice.url, s_voice.token);
-    snprintf(s_voice.headers, sizeof(s_voice.headers),
-             "Authorization: Bearer %s\r\nProtocol-Version: %d\r\nDevice-Id: %s\r\nClient-Id: %s\r\n",
-             s_voice.token, s_voice.protocol_version, s_voice.device_id, s_voice.uuid);
-    esp_websocket_client_config_t cfg = {};
-    cfg.uri = s_voice.url;
-    cfg.headers = s_voice.headers;
-    cfg.buffer_size = 2048;
-    cfg.task_stack = 8192;
-    cfg.disable_auto_reconnect = true;
-    cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    s_voice.websocket = esp_websocket_client_init(&cfg);
-    if (!s_voice.websocket) return false;
+    /* Build MQTT URI (prepend mqtts:// if missing) */
+    char mqtt_uri[192] = {};
+    if (strstr(s_voice.mqtt_endpoint, "://")) {
+        strlcpy(mqtt_uri, s_voice.mqtt_endpoint, sizeof(mqtt_uri));
+    } else {
+        snprintf(mqtt_uri, sizeof(mqtt_uri), "mqtts://%s:8883", s_voice.mqtt_endpoint);
+    }
+    ESP_LOGI(TAG, "MQTT connecting to %s as %s", mqtt_uri, s_voice.mqtt_client_id);
+    esp_mqtt_client_config_t mqtt_cfg = {};
+    mqtt_cfg.broker.address.uri = mqtt_uri;
+    mqtt_cfg.credentials.client_id = s_voice.mqtt_client_id;
+    mqtt_cfg.credentials.username = s_voice.mqtt_username;
+    mqtt_cfg.credentials.authentication.password = s_voice.mqtt_password;
+    mqtt_cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+    mqtt_cfg.session.disable_clean_session = false;
+    mqtt_cfg.network.timeout_ms = 10000;
 
-    esp_websocket_register_events(s_voice.websocket, WEBSOCKET_EVENT_ANY, websocket_event, nullptr);
-    esp_err_t err = esp_websocket_client_start(s_voice.websocket);
-    if (err != ESP_OK) {
-        ESP_LOGI(TAG, "WS start failed: %s", esp_err_to_name(err));
+    s_voice.mqtt = esp_mqtt_client_init(&mqtt_cfg);
+    if (!s_voice.mqtt) return false;
+
+    esp_mqtt_client_register_event(s_voice.mqtt, MQTT_EVENT_ANY, mqtt_event_handler, nullptr);
+    if (esp_mqtt_client_start(s_voice.mqtt) != ESP_OK) return false;
+
+    EventBits_t bits = xEventGroupWaitBits(s_voice.events, kMqttConnected, pdTRUE, pdFALSE, pdMS_TO_TICKS(15000));
+    if (!(bits & kMqttConnected)) {
+        ESP_LOGI(TAG, "MQTT connect timed out");
+        ui_chat_voice_set_status("Voice: MQTT timeout");
         return false;
     }
 
-    EventBits_t bits = xEventGroupWaitBits(s_voice.events, kWebSocketConnected, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
-    if (!(bits & kWebSocketConnected)) {
-        ESP_LOGI(TAG, "WS connect timed out (10s)");
-        ui_chat_voice_set_status("Voice: conn timed out");
-        return false;
-    }
-    ESP_LOGI(TAG, "WS connected OK");
+    /* Need a small delay for MQTT subscribe to complete before publishing */
+    vTaskDelay(pdMS_TO_TICKS(500));
 
-    char hello[384];
+    /* Send hello via MQTT with transport:udp to request UDP audio channel */
+    char hello[512];
     snprintf(hello, sizeof(hello),
-             "{\"type\":\"hello\",\"version\":%d,\"transport\":\"websocket\","
+             "{\"type\":\"hello\",\"version\":3,\"transport\":\"udp\","
              "\"features\":{\"mcp\":true,\"aec\":false,\"vad\":true},"
-             "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":16000,\"channels\":1,\"frame_duration\":60}}",
-             s_voice.protocol_version);
-    esp_websocket_client_send_text(s_voice.websocket, hello, strlen(hello), portMAX_DELAY);
+             "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":16000,"
+             "\"channels\":1,\"frame_duration\":60}}");
+    send_text(hello);
 
-    bits = xEventGroupWaitBits(s_voice.events, kServerHello, pdTRUE, pdFALSE, pdMS_TO_TICKS(5000));
-    bool ok = (bits & kServerHello) != 0;
-    ESP_LOGI(TAG, "WS hello %s", ok ? "received OK" : "timed out (5s)");
-    return ok;
+    /* Subscribe to receive server responses */
+    char sub_topic[96];
+    snprintf(sub_topic, sizeof(sub_topic), "GID_test@@@%s", s_voice.device_id);
+    esp_mqtt_client_subscribe(s_voice.mqtt, sub_topic, 0);
+    if (s_voice.mqtt_publish_topic[0]) {
+        esp_mqtt_client_subscribe(s_voice.mqtt, s_voice.mqtt_publish_topic, 0);
+    }
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    /* Wait for server hello with UDP config */
+    bits = xEventGroupWaitBits(s_voice.events, kServerHello, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
+    if (!(bits & kServerHello)) {
+        ESP_LOGI(TAG, "MQTT hello timed out");
+        return false;
+    }
+    ESP_LOGI(TAG, "MQTT hello OK, session=%s", s_voice.session_id);
+
+    /* Open UDP socket for audio */
+    if (s_voice.udp_server[0] && s_voice.udp_port > 0) {
+        mbedtls_aes_init(&s_voice.aes_ctx);
+        mbedtls_aes_setkey_enc(&s_voice.aes_ctx, s_voice.aes_key, 128);
+
+        s_voice.udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (s_voice.udp_fd >= 0) {
+            struct sockaddr_in local = {};
+            local.sin_family = AF_INET;
+            local.sin_port = 0;  /* any local port */
+            bind(s_voice.udp_fd, (struct sockaddr *)&local, sizeof(local));
+            /* Set a receive timeout so we can check for incoming audio */
+            struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
+            setsockopt(s_voice.udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            ESP_LOGI(TAG, "UDP socket opened -> %s:%d", s_voice.udp_server, s_voice.udp_port);
+        }
+    }
+    return true;
+}
+
+static void close_audio_channel(void)
+{
+    /* Close UDP */
+    if (s_voice.udp_fd >= 0) {
+        close(s_voice.udp_fd);
+        s_voice.udp_fd = -1;
+        mbedtls_aes_free(&s_voice.aes_ctx);
+    }
+    /* Send goodbye via MQTT */
+    if (s_voice.session_id[0]) {
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "{\"type\":\"goodbye\",\"session_id\":\"%s\"}", s_voice.session_id);
+        send_text(msg);
+    }
+    s_voice.listening = false;
+    s_voice.session_id[0] = '\0';
 }
 
 static void voice_task(void *arg)
@@ -271,60 +420,62 @@ static void voice_task(void *arg)
     (void)arg;
 
     while (1) {  /* Outer loop: reconnect forever */
-        /* OTA registration once per boot (background task, HTTPS) */
+        /* OTA registration once per boot */
         if (!s_voice.ota_done.exchange(true)) {
             ESP_LOGI(TAG, "Starting OTA registration...");
             esp_err_t oret = xiaozhi_ota_register();
             ESP_LOGI(TAG, "OTA registration: %s", esp_err_to_name(oret));
-            /* Refresh URL/token from NVS (OTA may have updated them) */
-            nvs_handle_t ws_nvs;
-            if (nvs_open("websocket", NVS_READONLY, &ws_nvs) == ESP_OK) {
-                size_t sz = sizeof(s_voice.url);
-                nvs_get_str(ws_nvs, "url", s_voice.url, &sz);
-                sz = sizeof(s_voice.token);
-                nvs_get_str(ws_nvs, "token", s_voice.token, &sz);
-                nvs_close(ws_nvs);
+            /* Load MQTT credentials from NVS (populated by OTA) */
+            nvs_handle_t nvs;
+            if (nvs_open("mqtt", NVS_READONLY, &nvs) == ESP_OK) {
+                size_t sz;
+                sz = sizeof(s_voice.mqtt_endpoint);
+                nvs_get_str(nvs, "endpoint", s_voice.mqtt_endpoint, &sz);
+                sz = sizeof(s_voice.mqtt_client_id);
+                nvs_get_str(nvs, "client_id", s_voice.mqtt_client_id, &sz);
+                sz = sizeof(s_voice.mqtt_username);
+                nvs_get_str(nvs, "username", s_voice.mqtt_username, &sz);
+                sz = sizeof(s_voice.mqtt_password);
+                nvs_get_str(nvs, "password", s_voice.mqtt_password, &sz);
+                sz = sizeof(s_voice.mqtt_publish_topic);
+                nvs_get_str(nvs, "publish_topic", s_voice.mqtt_publish_topic, &sz);
+                nvs_close(nvs);
             }
         }
 
-        /* Settle delay before WebSocket connect */
+        /* Settle delay */
         vTaskDelay(pdMS_TO_TICKS(500));
 
-        if (!open_xiaozhi_session("xiaozhi")) {
-            /* Retry with short delays; user button can break out early */
+        if (!open_audio_channel()) {
             ui_chat_voice_set_status("Voice: retry in 3s...");
             for (int i = 0; i < 6; i++) {
                 vTaskDelay(pdMS_TO_TICKS(500));
-                if (s_voice.manual_start_requested.exchange(false)) {
-                    break;  /* User clicked → retry immediately */
-                }
+                if (s_voice.manual_start_requested.exchange(false)) break;
             }
             continue;
         }
 
-        /* Wait for wake word */
         ui_chat_voice_set_status("Voice: say xiaozhixiaozhi");
 
-        while (s_voice.websocket && esp_websocket_client_is_connected(s_voice.websocket)) {
+        while (s_voice.mqtt && s_voice.session_id[0]) {
             /* Check for manual listening request */
             if (s_voice.manual_start_requested.exchange(false)) {
-                char listen[192];
+                char listen[256];
                 snprintf(listen, sizeof(listen),
                          "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\","
                          "\"session_id\":\"%s\"}", s_voice.session_id);
-                if (s_voice.websocket) esp_websocket_client_send_text(s_voice.websocket, listen, strlen(listen), portMAX_DELAY);
+                send_text(listen);
                 s_voice.listening = true;
                 s_voice.silence_frames = 0;
                 s_voice.opus_pcm.clear();
                 ui_chat_voice_set_status("Voice: listening...");
             }
 
-            /* Read audio from codec and feed to AFE pipeline (always, for wake word detection) */
+            /* Read audio from codec and feed to AFE pipeline */
             if (!s_voice.afe_iface || !s_voice.afe || !s_voice.codec) {
                 vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
-            /* Pre-allocated buffer for AFE feeding (avoids heap alloc per iteration) */
             static int16_t *afe_buf = nullptr;
             static int afe_buf_size = 0;
             int feed_chunk = s_voice.afe_iface->get_feed_chunksize(s_voice.afe);
@@ -333,12 +484,8 @@ static void voice_task(void *arg)
                 if (afe_buf) heap_caps_free(afe_buf);
                 afe_buf = (int16_t *)heap_caps_malloc(needed, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
                 afe_buf_size = afe_buf ? needed : 0;
-                if (!afe_buf) {
-                    vTaskDelay(pdMS_TO_TICKS(10));
-                    continue;
-                }
+                if (!afe_buf) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
             }
-            /* Read PCM directly from I2S RX (codec_dev_read returns 0 on this board) */
             size_t i2s_bytes = 0;
             esp_err_t i2s_ret = i2s_channel_read(s_voice.rx, afe_buf, needed, &i2s_bytes, pdMS_TO_TICKS(50));
             if (i2s_ret == ESP_OK && i2s_bytes > 0) {
@@ -347,43 +494,38 @@ static void voice_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(5));
             }
 
-            /* Fetch processed audio from AFE (always, to check wake word trigger) */
             afe_fetch_result_t *result = s_voice.afe_iface->fetch(s_voice.afe);
-            if (!result) {
-                vTaskDelay(pdMS_TO_TICKS(10));
-                continue;
-            }
-            /* Check for wake word trigger event */
+            if (!result) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
+
+            /* Wake word detection */
             if (result->wakeup_state > 0 && !s_voice.listening) {
                 ESP_LOGI(TAG, "Wake word triggered! state=%d", result->wakeup_state);
-                char listen[192];
+                char listen[256];
                 snprintf(listen, sizeof(listen),
                          "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\","
                          "\"session_id\":\"%s\"}", s_voice.session_id);
-                if (s_voice.websocket) esp_websocket_client_send_text(s_voice.websocket, listen, strlen(listen), portMAX_DELAY);
+                send_text(listen);
                 s_voice.listening = true;
                 s_voice.silence_frames = 0;
                 s_voice.opus_pcm.clear();
-                s_voice.post_wake_skip = 5;  /* Drop ~300ms to avoid sending wake-word audio */
+                s_voice.post_wake_skip = 5;
                 ui_chat_voice_set_status("Voice: wake word detected");
             }
-            /* Only send audio data when actively listening */
             if (!s_voice.listening || result->data_size == 0) {
                 vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
             }
-            /* Skip a few frames after wake word to avoid sending wake-word audio */
             if (s_voice.post_wake_skip > 0) {
                 s_voice.post_wake_skip--;
                 vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
             }
 
-            /* Opus-encode and send */
+            /* Opus-encode and send via UDP+AES */
             const size_t samples = result->data_size / sizeof(int16_t);
             s_voice.opus_pcm.insert(s_voice.opus_pcm.end(), result->data, result->data + samples);
             while (s_voice.opus_pcm.size() >= kOpusFrameSamples) {
-                send_opus_frame(s_voice.opus_pcm.data());
+                udp_send_opus(s_voice.opus_pcm.data());
                 s_voice.opus_pcm.erase(s_voice.opus_pcm.begin(),
                                        s_voice.opus_pcm.begin() + kOpusFrameSamples);
             }
@@ -391,14 +533,22 @@ static void voice_task(void *arg)
             if (s_voice.silence_frames > 30) {
                 stop_listening("Voice: processing");
             }
+
+            /* Check for incoming UDP audio (TTS playback) — non-blocking */
+            if (s_voice.udp_fd >= 0) {
+                uint8_t udp_buf[1472];
+                ssize_t rlen = recv(s_voice.udp_fd, udp_buf, sizeof(udp_buf), MSG_DONTWAIT);
+                if (rlen > kUdpHeaderLen) {
+                    ESP_LOGD(TAG, "UDP recv %d bytes", (int)rlen);
+                    /* Incoming audio would be AES-decrypted and played here */
+                }
+            }
         }
 
-        /* Inner loop exited => connection lost. Clean up and retry. */
-        ESP_LOGI(TAG, "WS disconnected, reconnecting...");
+        /* Inner loop exited => connection lost */
+        ESP_LOGI(TAG, "MQTT disconnected, reconnecting...");
         ui_chat_voice_set_status("Voice: reconnecting...");
-        s_voice.listening = false;
-        s_voice.session_id[0] = '\0';
-        ws_close();
+        close_audio_channel();
     }
 }
 
@@ -424,29 +574,16 @@ static void voice_hardware_init_task(void *arg)
 
     ui_chat_voice_set_status("Voice: reading credentials");
 
-    /* Load credentials from NVS */
+    /* Load MQTT credentials (will be updated by OTA later) */
     {
-        nvs_handle_t ws;
-        esp_err_t err = nvs_open("websocket", NVS_READONLY, &ws);
-        if (err != ESP_OK) {
-            ui_chat_voice_set_status("Voice: activate XiaoZhi first");
-            goto fail;
-        }
-        size_t sz = sizeof(s_voice.url);
-        err = nvs_get_str(ws, "url", s_voice.url, &sz);
-        if (err == ESP_OK) {
-            sz = sizeof(s_voice.token);
-            err = nvs_get_str(ws, "token", s_voice.token, &sz);
-        }
-        if (err == ESP_OK) {
-            int32_t ver = 1;
-            nvs_get_i32(ws, "version", &ver);
-            s_voice.protocol_version = ver > 0 ? ver : 1;
-        }
-        nvs_close(ws);
-        if (err != ESP_OK) {
-            ui_chat_voice_set_status("Voice: missing credentials");
-            goto fail;
+        nvs_handle_t mqtt_nvs;
+        if (nvs_open("mqtt", NVS_READONLY, &mqtt_nvs) == ESP_OK) {
+            size_t sz;
+            sz = sizeof(s_voice.mqtt_endpoint);
+            nvs_get_str(mqtt_nvs, "endpoint", s_voice.mqtt_endpoint, &sz);
+            sz = sizeof(s_voice.mqtt_publish_topic);
+            nvs_get_str(mqtt_nvs, "publish_topic", s_voice.mqtt_publish_topic, &sz);
+            nvs_close(mqtt_nvs);
         }
     }
     {
@@ -706,29 +843,27 @@ extern "C" esp_err_t xiaozhi_ota_register(void)
             if (read_len > 0) {
                 ESP_LOGI(TAG, "OTA response (len=%d): %.*s", read_len, read_len, resp);
 
-                /* Parse response for websocket config */
                 cJSON *r = cJSON_Parse(resp);
                 if (r) {
-                    cJSON *ws = cJSON_GetObjectItemCaseSensitive(r, "websocket");
-                    if (cJSON_IsObject(ws)) {
+                    cJSON *mq = cJSON_GetObjectItemCaseSensitive(r, "mqtt");
+                    if (cJSON_IsObject(mq)) {
                         nvs_handle_t nvs;
-                        if (nvs_open("websocket", NVS_READWRITE, &nvs) == ESP_OK) {
-                            cJSON *val;
-                            val = cJSON_GetObjectItemCaseSensitive(ws, "url");
-                            if (cJSON_IsString(val))
-                                nvs_set_str(nvs, "url", val->valuestring);
-                            val = cJSON_GetObjectItemCaseSensitive(ws, "token");
-                            if (cJSON_IsString(val))
-                                nvs_set_str(nvs, "token", val->valuestring);
-                            val = cJSON_GetObjectItemCaseSensitive(ws, "version");
-                            if (cJSON_IsNumber(val))
-                                nvs_set_i32(nvs, "version", val->valueint);
+                        if (nvs_open("mqtt", NVS_READWRITE, &nvs) == ESP_OK) {
+                            cJSON *v;
+                            v = cJSON_GetObjectItemCaseSensitive(mq, "endpoint");
+                            if (cJSON_IsString(v)) nvs_set_str(nvs, "endpoint", v->valuestring);
+                            v = cJSON_GetObjectItemCaseSensitive(mq, "client_id");
+                            if (cJSON_IsString(v)) nvs_set_str(nvs, "client_id", v->valuestring);
+                            v = cJSON_GetObjectItemCaseSensitive(mq, "username");
+                            if (cJSON_IsString(v)) nvs_set_str(nvs, "username", v->valuestring);
+                            v = cJSON_GetObjectItemCaseSensitive(mq, "password");
+                            if (cJSON_IsString(v)) nvs_set_str(nvs, "password", v->valuestring);
+                            v = cJSON_GetObjectItemCaseSensitive(mq, "publish_topic");
+                            if (cJSON_IsString(v)) nvs_set_str(nvs, "publish_topic", v->valuestring);
                             nvs_commit(nvs);
                             nvs_close(nvs);
-                            ESP_LOGI(TAG, "WebSocket credentials saved to NVS");
+                            ESP_LOGI(TAG, "MQTT credentials saved to NVS");
                         }
-                    } else {
-                        ESP_LOGW(TAG, "No websocket config in OTA response");
                     }
                     cJSON_Delete(r);
                 }
