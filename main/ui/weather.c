@@ -148,12 +148,7 @@ static esp_err_t http_cb(esp_http_client_event_t *evt)
                     default:                    cond = "?"; break;
                 }
                 if (lvgl_port_lock(-1)) {
-                    if (s_temp) {
-                        char buf[16];
-                        int n = snprintf(buf, sizeof(buf), "%d", t);
-                        buf[n] = 0xC2; buf[n+1] = 0xB0; buf[n+2] = 'C'; buf[n+3] = 0;
-                        lv_label_set_text(s_temp, buf);
-                    }
+                    if (s_temp) lv_label_set_text_fmt(s_temp, "%d C", t);
                     if (s_loc) lv_label_set_text(s_loc, s_city);
                     if (s_cond) {
                         lv_label_set_text(s_cond, cond);
@@ -386,10 +381,7 @@ lv_obj_t *ui_weather_create(void)
 
     /* Temperature - very large, centered */
     s_temp = lv_label_create(body);
-    {
-        char tmp[] = { '-', '-', 0xC2, 0xB0, 'C', 0 };
-        lv_label_set_text(s_temp, tmp);
-    }
+    lv_label_set_text(s_temp, "-- C");
     lv_obj_set_style_text_font(s_temp, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_temp, lv_color_hex(0xFDD835), 0);
     lv_obj_set_style_margin_top(s_temp, 30, 0);
