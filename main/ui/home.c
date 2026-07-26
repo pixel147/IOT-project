@@ -27,22 +27,23 @@ static const char *APP_SYMBOLS[] = {
     LV_SYMBOL_EYE_OPEN,     /* 情绪监控 */
     LV_SYMBOL_ENVELOPE,     /* AI 聊天  */
     LV_SYMBOL_SETTINGS,     /* 设置    */
+    LV_SYMBOL_IMAGE,        /* 天气    */
 };
 static const char *APP_NAMES[] = {
-    "情绪监控", "AI 聊天", "设置",
+    "情绪监控", "AI 聊天", "设置", "天气",
 };
 static const uint32_t APP_COLORS[] = {
-    0x43A047, 0x1565C0, 0x78909C,
+    0x43A047, 0x1565C0, 0x78909C, 0xFDD835,
 };
 
 #define ICON_SIZE     120
 #define ICON_GAP       32
 #define ICON_RADIUS    24
 #define SYMBOL_SIZE    42
-#define GRID_COLS       3
+#define GRID_COLS       4
 
 static lv_obj_t *s_home_screen = NULL;
-static lv_obj_t *s_icon_btns[3] = {NULL};
+static lv_obj_t *s_icon_btns[4] = {NULL};
 
 lv_obj_t *ui_home_get_screen(void) { return s_home_screen; }
 
@@ -115,7 +116,7 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_pad_column(grid, ICON_GAP, 0);
     lv_obj_center(grid);
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         /* 图标 + 标签 的列 */
         lv_obj_t *col = lv_obj_create(grid);
         lv_obj_set_size(col, ICON_SIZE, LV_SIZE_CONTENT);
@@ -147,6 +148,6 @@ lv_obj_t *ui_home_create(void)
 /* ---- 设置图标回调 ---- */
 void ui_home_set_icon_callback(int icon_index, lv_event_cb_t cb)
 {
-    if (icon_index < 0 || icon_index > 2 || !s_icon_btns[icon_index]) return;
+    if (icon_index < 0 || icon_index > 3 || !s_icon_btns[icon_index]) return;
     lv_obj_add_event_cb(s_icon_btns[icon_index], cb, LV_EVENT_CLICKED, NULL);
 }

@@ -9,6 +9,7 @@
 #include "home.h"
 #include "settings.h"
 #include "chat.h"
+#include "weather.h"
 #include "sdcard_init.h"
 #include "face_detect_wrapper.hpp"
 #include "emotion_espdl.hpp"
@@ -70,6 +71,7 @@ static lv_obj_t *s_home_scr = NULL;
 static lv_obj_t *s_monitor_scr = NULL;
 static lv_obj_t *s_settings_scr = NULL;
 static lv_obj_t *s_chat_scr = NULL;
+static lv_obj_t *s_weather_scr = NULL;
 
 static void on_icon_monitor(lv_event_t *e)
 {
@@ -99,6 +101,22 @@ static void on_icon_settings(lv_event_t *e)
     if (lvgl_port_lock(-1)) {
         lv_screen_load(s_settings_scr);
         ui_settings_scan_wifi();
+        lvgl_port_unlock();
+    }
+}
+static void on_icon_weather(lv_event_t *e)
+{
+    (void)e;
+    if (lvgl_port_lock(-1)) {
+        lv_screen_load(s_weather_scr);
+        lvgl_port_unlock();
+    }
+}
+static void on_weather_back(lv_event_t *e)
+{
+    (void)e;
+    if (lvgl_port_lock(-1)) {
+        lv_screen_load(s_home_scr);
         lvgl_port_unlock();
     }
 }
@@ -373,6 +391,7 @@ void app_main(void)
     ui_home_set_icon_callback(0, on_icon_monitor);
     ui_home_set_icon_callback(1, on_icon_chat);
     ui_home_set_icon_callback(2, on_icon_settings);
+    ui_home_set_icon_callback(3, on_icon_weather);
 
     /* Monitor 返回 → Home */
     ui_monitor_set_back_callback(on_monitor_back);
@@ -383,6 +402,9 @@ void app_main(void)
 
     s_chat_scr = ui_chat_create();
     ui_chat_set_back_callback(on_chat_back);
+
+    s_weather_scr = ui_weather_create();
+    ui_weather_set_back_callback(on_weather_back);
 
     /* 给 canvas 设初始缓冲 */
     if (s_fb_disp) {
