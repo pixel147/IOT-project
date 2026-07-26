@@ -17,13 +17,15 @@
 #include "esp_http_client.h"
 #include "mqtt_client.h"
 #include "esp_wifi.h"
+
+#include <mbedtls/aes.h>
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-
-#include <mbedtls/aes.h>
 
 #include <cJSON.h>
 
@@ -36,10 +38,6 @@
 
 #include "chat.h"
 
-/* lwip socket API for UDP audio channel */
-#include "lwip/sockets.h"
-#include "lwip/netdb.h"
-
 namespace {
 
 constexpr const char *TAG = "XIAOZHI_VOICE";
@@ -47,8 +45,15 @@ constexpr int kSampleRate = 16000;
 constexpr int kOpusFrameSamples = 960;  // 60 ms at 16 kHz.
 constexpr EventBits_t kServerHello = BIT0;
 constexpr EventBits_t kMqttConnected = BIT1;
-constexpr int kUdpHeaderLen = 16;
+constexpr EventBits_t kMcpDone = BIT2;
+constexpr int kMqttTimeoutMs = 15000;
 constexpr int kAesKeyLen = 16;
+
+/* AES key/nonce from server hello for UDP audio encryption */
+struct UdpKey {
+    uint8_t key[kAesKeyLen];
+    uint8_t nonce[kAesKeyLen];
+};
 
 struct VoiceState {
     esp_codec_dev_handle_t codec = nullptr;
@@ -61,16 +66,15 @@ struct VoiceState {
     srmodel_list_t *models = nullptr;
     const esp_afe_sr_iface_t *afe_iface = nullptr;
     esp_afe_sr_data_t *afe = nullptr;
-    void *opus = nullptr;
-    int opus_output_size = 0;
+    void *opus_enc = nullptr;
+    int opus_enc_out_sz = 0;
     EventGroupHandle_t events = nullptr;
     char session_id[96] = {};
     char uuid[96] = {};
     char device_id[18] = {};
     std::atomic<bool> manual_start_requested{false};
-    std::atomic<bool> ota_done{false};
-    std::atomic<bool> hello_sent{false};
-    int post_wake_skip = 0;
+    std::atomic<bool> session_active{false};
+    std::atomic<bool> turn_finished{false};
     bool listening = false;
     int silence_frames = 0;
     std::vector<int16_t> opus_pcm;
@@ -82,15 +86,22 @@ struct VoiceState {
     char mqtt_username[128] = {};
     char mqtt_password[128] = {};
     char mqtt_publish_topic[64] = {};
+    char mqtt_p2p_topic[64] = {};   /* devices/p2p/{mac} — server pushes messages here */
 
-    /* UDP audio channel (from server hello) */
+    /* UDP audio send */
     int udp_fd = -1;
     char udp_server[64] = {};
     int udp_port = 0;
-    uint8_t aes_key[kAesKeyLen] = {};
-    uint8_t aes_nonce[kAesKeyLen] = {};
     mbedtls_aes_context aes_ctx;
+    UdpKey udp_key;
     uint32_t local_sequence = 0;
+
+    /* Task-local buffer (was static) */
+    int16_t *afe_buf = nullptr;
+    int afe_buf_sz = 0;
+
+    /* One-shot OTA */
+    bool ota_registered = false;
 };
 
 VoiceState s_voice;
@@ -105,34 +116,22 @@ static void get_wifi_mac(uint8_t mac[6])
     }
 }
 
-/* ---- MQTT + UDP protocol (replaces WebSocket) ---- */
+/* ---- MQTT + UDP protocol ---- */
 
-/* Send a JSON string via MQTT publish. */
-static void send_text(const char *json)
+/* Send a JSON string via MQTT publish (returns msg_id or -1). */
+static int send_text(const char *json)
 {
     if (s_voice.mqtt && s_voice.mqtt_publish_topic[0]) {
-        esp_mqtt_client_publish(s_voice.mqtt, s_voice.mqtt_publish_topic,
-                                json, 0, 1, 0);
+        return esp_mqtt_client_publish(s_voice.mqtt, s_voice.mqtt_publish_topic,
+                                       json, 0, 1, 0);
     }
-}
-
-/* Hex decode helper for AES key/nonce from server hello. */
-static int hex_decode(const char *hex, uint8_t *out, int max_out)
-{
-    int len = 0;
-    while (*hex && *(hex + 1) && len < max_out) {
-        unsigned int b;
-        sscanf(hex, "%2x", &b);
-        out[len++] = (uint8_t)b;
-        hex += 2;
-    }
-    return len;
+    return -1;
 }
 
 static void stop_listening(const char *status)
 {
     if (s_voice.listening && s_voice.session_id[0]) {
-        char msg[256];
+        char msg[192];
         snprintf(msg, sizeof(msg),
                  "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"stop\"}",
                  s_voice.session_id);
@@ -141,93 +140,127 @@ static void stop_listening(const char *status)
     s_voice.listening = false;
     s_voice.silence_frames = 0;
     s_voice.opus_pcm.clear();
-    s_voice.afe_iface->enable_wakenet(s_voice.afe);
-    ui_chat_voice_set_status(status);
+    if (status) ui_chat_voice_set_status(status);
 }
 
-/* Encrypt and send one Opus frame over UDP with AES-128-CTR.
- * Nonce format: [2B const][2B len][4B const][4B timestamp][4B sequence] */
+static bool load_mqtt_credentials(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open("mqtt", NVS_READONLY, &nvs) != ESP_OK) return false;
+
+    size_t sz = sizeof(s_voice.mqtt_endpoint);
+    esp_err_t err = nvs_get_str(nvs, "endpoint", s_voice.mqtt_endpoint, &sz);
+    sz = sizeof(s_voice.mqtt_client_id);
+    if (err == ESP_OK) err = nvs_get_str(nvs, "client_id", s_voice.mqtt_client_id, &sz);
+    sz = sizeof(s_voice.mqtt_username);
+    if (err == ESP_OK) err = nvs_get_str(nvs, "username", s_voice.mqtt_username, &sz);
+    sz = sizeof(s_voice.mqtt_password);
+    if (err == ESP_OK) err = nvs_get_str(nvs, "password", s_voice.mqtt_password, &sz);
+    sz = sizeof(s_voice.mqtt_publish_topic);
+    if (err == ESP_OK) err = nvs_get_str(nvs, "publish_topic", s_voice.mqtt_publish_topic, &sz);
+    nvs_close(nvs);
+
+    return err == ESP_OK && s_voice.mqtt_endpoint[0] && s_voice.mqtt_client_id[0] &&
+           s_voice.mqtt_username[0] && s_voice.mqtt_password[0] && s_voice.mqtt_publish_topic[0];
+}
+
+/* ---- AES-128-CTR encrypt and send one Opus frame via UDP ---- */
+/* Nonce: [2B const][2B payload_len][4B const][4B timestamp][4B seq] */
+
 static void udp_send_opus(const int16_t *pcm)
 {
-    /* Opus encode first */
-    std::vector<uint8_t> output(s_voice.opus_output_size);
+    if (s_voice.udp_fd < 0 || !s_voice.opus_enc) return;
+
+    /* Opus encode */
+    std::vector<uint8_t> opus(s_voice.opus_enc_out_sz);
     esp_audio_enc_in_frame_t input = {
         .buffer = const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(pcm)),
         .len = static_cast<uint32_t>(kOpusFrameSamples * sizeof(int16_t)),
     };
     esp_audio_enc_out_frame_t encoded = {
-        .buffer = output.data(),
-        .len = static_cast<uint32_t>(output.size()),
+        .buffer = opus.data(),
+        .len = static_cast<uint32_t>(opus.size()),
         .encoded_bytes = 0,
     };
-    if (esp_opus_enc_process(s_voice.opus, &input, &encoded) != ESP_AUDIO_ERR_OK ||
+    if (esp_opus_enc_process(s_voice.opus_enc, &input, &encoded) != ESP_AUDIO_ERR_OK ||
         encoded.encoded_bytes == 0) return;
 
-    /* Build nonce: reuse aes_nonce bytes 0-1 and 4-7 with dynamic fields */
+    /* Build nonce */
     uint8_t nonce[kAesKeyLen];
-    memcpy(nonce, s_voice.aes_nonce, 2);                     // bytes 0-1: constant
-    nonce[2] = (encoded.encoded_bytes >> 8) & 0xff;          // bytes 2-3: payload_len
-    nonce[3] = encoded.encoded_bytes & 0xff;
-    memcpy(nonce + 4, s_voice.aes_nonce + 4, 4);             // bytes 4-7: constant
-    uint32_t ts = esp_timer_get_time() / 1000;               // ms timestamp
-    nonce[8] = (ts >> 24) & 0xff;  nonce[9] = (ts >> 16) & 0xff;
-    nonce[10] = (ts >> 8) & 0xff;  nonce[11] = ts & 0xff;    // bytes 8-11: timestamp
+    memcpy(nonce, s_voice.udp_key.nonce, 2);
+    nonce[2] = (uint8_t)((encoded.encoded_bytes >> 8) & 0xff);
+    nonce[3] = (uint8_t)(encoded.encoded_bytes & 0xff);
+    memcpy(nonce + 4, s_voice.udp_key.nonce + 4, 4);
+    uint32_t ts = (uint32_t)(esp_timer_get_time() / 1000);
+    nonce[8]  = (uint8_t)(ts >> 24); nonce[9]  = (uint8_t)(ts >> 16);
+    nonce[10] = (uint8_t)(ts >> 8);  nonce[11] = (uint8_t)(ts);
     uint32_t seq = s_voice.local_sequence++;
-    nonce[12] = (seq >> 24) & 0xff; nonce[13] = (seq >> 16) & 0xff;
-    nonce[14] = (seq >> 8) & 0xff;  nonce[15] = seq & 0xff;  // bytes 12-15: sequence
+    nonce[12] = (uint8_t)(seq >> 24); nonce[13] = (uint8_t)(seq >> 16);
+    nonce[14] = (uint8_t)(seq >> 8);  nonce[15] = (uint8_t)(seq);
 
-    /* AES-128-CTR encrypt the Opus payload */
-    size_t enc_len = encoded.encoded_bytes;
-    std::vector<uint8_t> cipher(enc_len);
+    /* AES-128-CTR encrypt */
+    size_t elen = encoded.encoded_bytes;
+    std::vector<uint8_t> cipher(elen);
     uint8_t stream_block[16] = {};
     size_t offset = 0;
-    mbedtls_aes_crypt_ctr(&s_voice.aes_ctx, enc_len, &offset,
-                          nonce, stream_block, output.data(), cipher.data());
+    mbedtls_aes_crypt_ctr(&s_voice.aes_ctx, elen, &offset,
+                          nonce, stream_block, opus.data(), cipher.data());
 
-    /* Send: [16B nonce][encrypted payload] */
+    /* UDP send: [16B nonce][ciphertext] */
     std::vector<uint8_t> packet;
-    packet.reserve(kUdpHeaderLen + enc_len);
-    packet.insert(packet.end(), nonce, nonce + kUdpHeaderLen);
+    packet.reserve(16 + elen);
+    packet.insert(packet.end(), nonce, nonce + 16);
     packet.insert(packet.end(), cipher.begin(), cipher.end());
 
-    if (s_voice.udp_fd >= 0) {
-        struct sockaddr_in dest = {};
-        dest.sin_family = AF_INET;
-        dest.sin_port = htons(s_voice.udp_port);
-        inet_pton(AF_INET, s_voice.udp_server, &dest.sin_addr);
-        sendto(s_voice.udp_fd, packet.data(), packet.size(), 0,
-               (struct sockaddr *)&dest, sizeof(dest));
-    }
+    struct sockaddr_in dest = {};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(s_voice.udp_port);
+    inet_pton(AF_INET, s_voice.udp_server, &dest.sin_addr);
+    sendto(s_voice.udp_fd, packet.data(), packet.size(), 0,
+           (struct sockaddr *)&dest, sizeof(dest));
 }
 
-/* MQTT event handler */
-static void mqtt_event_handler(void *arg, esp_event_base_t, int32_t event_id, void *edata)
+/* ---- MQTT event handler ---- */
+
+static void mqtt_event_handler(void *arg, esp_event_base_t base,
+                                int32_t event_id, void *edata)
 {
-    (void)arg;
+    (void)arg; (void)base;
     auto &e = *static_cast<esp_mqtt_event_t *>(edata);
 
     if (event_id == MQTT_EVENT_CONNECTED) {
         ESP_LOGI(TAG, "MQTT connected");
+        /* Subscribe to P2P topic: devices/p2p/{mac_with_underscores} */
+        {
+            char p2p_topic[64];
+            snprintf(p2p_topic, sizeof(p2p_topic), "devices/p2p/%s", s_voice.device_id);
+            /* Replace colons with underscores */
+            for (char *p = p2p_topic; *p; p++) if (*p == ':') *p = '_';
+            esp_mqtt_client_subscribe(s_voice.mqtt, p2p_topic, 1);
+            strlcpy(s_voice.mqtt_p2p_topic, p2p_topic, sizeof(s_voice.mqtt_p2p_topic));
+            ESP_LOGI(TAG, "Subscribed to %s", p2p_topic);
+        }
         xEventGroupSetBits(s_voice.events, kMqttConnected);
 
     } else if (event_id == MQTT_EVENT_DISCONNECTED) {
         ESP_LOGI(TAG, "MQTT disconnected");
         s_voice.listening = false;
         s_voice.session_id[0] = '\0';
-        s_voice.hello_sent = false;
-        ui_chat_voice_set_status("Voice: disconnected");
-
-    } else if (event_id == MQTT_EVENT_ERROR) {
-        ESP_LOGW(TAG, "MQTT error");
+        if (s_voice.session_active.load()) {
+            ui_chat_voice_set_status("Voice: connection lost");
+        }
 
     } else if (event_id == MQTT_EVENT_DATA) {
-        /* If server pushes hello before our hello, still process it (broker auto-routes) */
-        std::string topic(e.topic, e.topic_len);
+        ESP_LOGI(TAG, "MQTT data on topic=%.*s len=%d %.*s",
+                 e.topic_len, e.topic, e.data_len,
+                 e.data_len > 100 ? 100 : e.data_len, e.data);
+        /* Save P2P topic from first incoming message */
+        if (e.topic_len > 0 && !s_voice.mqtt_p2p_topic[0] && e.topic_len < 64) {
+            strlcpy(s_voice.mqtt_p2p_topic, e.topic, e.topic_len + 1);
+        }
         std::string payload(e.data, e.data_len);
-        ESP_LOGD(TAG, "MQTT data on %s: %.*s", topic.c_str(), (int)payload.size(), payload.c_str());
-
         cJSON *root = cJSON_ParseWithLength(payload.data(), payload.size());
-        if (!root) { ESP_LOGW(TAG, "Ignoring invalid MQTT JSON"); return; }
+        if (!root) return;
 
         cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
         if (!cJSON_IsString(type)) { cJSON_Delete(root); return; }
@@ -246,13 +279,17 @@ static void mqtt_event_handler(void *arg, esp_event_base_t, int32_t event_id, vo
                 cJSON *ky = cJSON_GetObjectItemCaseSensitive(udp, "key");
                 cJSON *nc = cJSON_GetObjectItemCaseSensitive(udp, "nonce");
                 if (cJSON_IsString(sv)) strlcpy(s_voice.udp_server, sv->valuestring, sizeof(s_voice.udp_server));
-                if (cJSON_IsNumber(pt))  s_voice.udp_port   = pt->valueint;
-                if (cJSON_IsString(ky))  hex_decode(ky->valuestring, s_voice.aes_key, kAesKeyLen);
-                if (cJSON_IsString(nc))  hex_decode(nc->valuestring, s_voice.aes_nonce, kAesKeyLen);
-                ESP_LOGI(TAG, "UDP config: %s:%d key=%d nonce=%d",
-                         s_voice.udp_server, s_voice.udp_port,
-                         (int)strlen(cJSON_IsString(ky)?ky->valuestring:""),
-                         (int)strlen(cJSON_IsString(nc)?nc->valuestring:""));
+                if (cJSON_IsNumber(pt))  s_voice.udp_port = pt->valueint;
+                if (cJSON_IsString(ky)) {
+                    const char *hex = ky->valuestring;
+                    for (int i = 0; i < kAesKeyLen && *hex && *(hex + 1); i++, hex += 2)
+                        sscanf(hex, "%2hhx", &s_voice.udp_key.key[i]);
+                }
+                if (cJSON_IsString(nc)) {
+                    const char *hex = nc->valuestring;
+                    for (int i = 0; i < kAesKeyLen && *hex && *(hex + 1); i++, hex += 2)
+                        sscanf(hex, "%2hhx", &s_voice.udp_key.nonce[i]);
+                }
             }
             xEventGroupSetBits(s_voice.events, kServerHello);
 
@@ -272,41 +309,56 @@ static void mqtt_event_handler(void *arg, esp_event_base_t, int32_t event_id, vo
                 }
             }
             if (cJSON_IsString(state) && strcmp(state->valuestring, "stop") == 0) {
+                s_voice.turn_finished.store(true);
                 stop_listening("Voice: ready");
             }
 
         } else if (strcmp(t, "mcp") == 0) {
-            cJSON *payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
-            cJSON *method = payload ? cJSON_GetObjectItemCaseSensitive(payload, "method") : nullptr;
-            cJSON *msg_id = payload ? cJSON_GetObjectItemCaseSensitive(payload, "id") : nullptr;
+            cJSON *p = cJSON_GetObjectItemCaseSensitive(root, "payload");
+            cJSON *method = p ? cJSON_GetObjectItemCaseSensitive(p, "method") : nullptr;
+            cJSON *msg_id = p ? cJSON_GetObjectItemCaseSensitive(p, "id") : nullptr;
+            cJSON *msg_ss = cJSON_GetObjectItemCaseSensitive(root, "session_id");
+            const char *resp_ss = cJSON_IsString(msg_ss) ? msg_ss->valuestring : s_voice.session_id;
+            char sess_f[128] = {};
+            if (resp_ss && resp_ss[0]) snprintf(sess_f, sizeof(sess_f), ",\"session_id\":\"%s\"", resp_ss);
             char mcp_resp[512] = {};
             if (cJSON_IsString(method)) {
                 int id = cJSON_IsNumber(msg_id) ? msg_id->valueint : 1;
                 if (strcmp(method->valuestring, "initialize") == 0) {
                     snprintf(mcp_resp, sizeof(mcp_resp),
                              "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,"
-                             "\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},"
-                             "\"serverInfo\":{\"name\":\"esp32-p4\",\"version\":\"2.4.0\"}}},"
-                             "\"session_id\":\"%s\"}", id, s_voice.session_id);
-                    ESP_LOGI(TAG, "MCP initialize responded");
+                             "\"result\":{\"protocolVersion\":\"2024-11-05\","
+                             "\"capabilities\":{\"audio\":{\"input\":true,\"output\":false},\"vad\":true},"
+                             "\"serverInfo\":{\"name\":\"esp32-p4\",\"version\":\"2.4.0\"}}}%s}",
+                             id, sess_f);
                 } else if (strcmp(method->valuestring, "tools/list") == 0) {
                     snprintf(mcp_resp, sizeof(mcp_resp),
                              "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,"
-                             "\"result\":{\"tools\":[]}},\"session_id\":\"%s\"}",
-                             id, s_voice.session_id);
-                    ESP_LOGI(TAG, "MCP tools/list responded");
+                             "\"result\":{\"tools\":[]}}%s}", id, sess_f);
                 }
-                if (mcp_resp[0]) send_text(mcp_resp);
+                if (mcp_resp[0]) {
+                    int msg_id = -1;
+                    if (s_voice.mqtt_p2p_topic[0]) {
+                        msg_id = esp_mqtt_client_publish(s_voice.mqtt,
+                                    s_voice.mqtt_p2p_topic, mcp_resp, 0, 1, 0);
+                    }
+                    ESP_LOGI(TAG, "MCP %s respond msg_id=%d p2p=%s",
+                             method->valuestring, msg_id, s_voice.mqtt_p2p_topic);
+                    xEventGroupSetBits(s_voice.events, kMcpDone);
+                }
             }
         }
         cJSON_Delete(root);
+    } else if (event_id == MQTT_EVENT_SUBSCRIBED) {
+        ESP_LOGI(TAG, "MQTT subscribe OK (msg_id=%d)", e.msg_id);
     }
 }
 
-/* Open audio channel: MQTT connect + hello + UDP socket. */
+/* ---- Open audio channel: MQTT connect + subscribe + hello + UDP socket ---- */
+
 static bool open_audio_channel(void)
 {
-    /* Clean up previous connection if any */
+    /* Clean up previous session */
     if (s_voice.mqtt) {
         esp_mqtt_client_stop(s_voice.mqtt);
         esp_mqtt_client_destroy(s_voice.mqtt);
@@ -316,90 +368,87 @@ static bool open_audio_channel(void)
         close(s_voice.udp_fd);
         s_voice.udp_fd = -1;
     }
-    xEventGroupClearBits(s_voice.events, kServerHello | kMqttConnected);
+    xEventGroupClearBits(s_voice.events, kServerHello | kMqttConnected | kMcpDone);
     s_voice.session_id[0] = '\0';
+    memset(&s_voice.udp_key, 0, sizeof(s_voice.udp_key));
     s_voice.local_sequence = 0;
 
-    /* Build MQTT URI (prepend mqtts:// if missing) */
-    char mqtt_uri[192] = {};
-    if (strstr(s_voice.mqtt_endpoint, "://")) {
-        strlcpy(mqtt_uri, s_voice.mqtt_endpoint, sizeof(mqtt_uri));
-    } else {
-        snprintf(mqtt_uri, sizeof(mqtt_uri), "mqtts://%s:8883", s_voice.mqtt_endpoint);
-    }
-    ESP_LOGI(TAG, "MQTT connecting to %s as %s", mqtt_uri, s_voice.mqtt_client_id);
-    esp_mqtt_client_config_t mqtt_cfg = {};
-    mqtt_cfg.broker.address.uri = mqtt_uri;
-    mqtt_cfg.credentials.client_id = s_voice.mqtt_client_id;
-    mqtt_cfg.credentials.username = s_voice.mqtt_username;
-    mqtt_cfg.credentials.authentication.password = s_voice.mqtt_password;
-    mqtt_cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
-    mqtt_cfg.session.disable_clean_session = false;
-    mqtt_cfg.network.timeout_ms = 10000;
+    ESP_LOGI(TAG, "MQTT %s:8883 as %s", s_voice.mqtt_endpoint, s_voice.mqtt_client_id);
 
-    s_voice.mqtt = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_config_t cfg = {};
+    cfg.broker.address.hostname = s_voice.mqtt_endpoint;
+    cfg.broker.address.port = 8883;
+    cfg.broker.address.transport = MQTT_TRANSPORT_OVER_SSL;
+    cfg.credentials.client_id = s_voice.mqtt_client_id;
+    cfg.credentials.username = s_voice.mqtt_username;
+    cfg.credentials.authentication.password = s_voice.mqtt_password;
+    cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.session.disable_clean_session = true;
+    cfg.network.timeout_ms = kMqttTimeoutMs;
+
+    s_voice.mqtt = esp_mqtt_client_init(&cfg);
     if (!s_voice.mqtt) return false;
 
-    esp_mqtt_client_register_event(s_voice.mqtt, MQTT_EVENT_ANY, mqtt_event_handler, nullptr);
+    esp_mqtt_client_register_event(s_voice.mqtt, MQTT_EVENT_ANY,
+                                    mqtt_event_handler, nullptr);
     if (esp_mqtt_client_start(s_voice.mqtt) != ESP_OK) return false;
 
-    EventBits_t bits = xEventGroupWaitBits(s_voice.events, kMqttConnected, pdTRUE, pdFALSE, pdMS_TO_TICKS(15000));
+    EventBits_t bits = xEventGroupWaitBits(s_voice.events, kMqttConnected,
+                                            pdTRUE, pdFALSE, pdMS_TO_TICKS(kMqttTimeoutMs));
     if (!(bits & kMqttConnected)) {
-        ESP_LOGI(TAG, "MQTT connect timed out");
-        ui_chat_voice_set_status("Voice: MQTT timeout");
+        ESP_LOGE(TAG, "MQTT connect timeout");
         return false;
     }
 
-    /* Short settle before hello */
-    vTaskDelay(pdMS_TO_TICKS(200));
+    /* Wait for MCP handshake to complete before sending hello */
+    bits = xEventGroupWaitBits(s_voice.events, kMcpDone,
+                                pdTRUE, pdFALSE, pdMS_TO_TICKS(5000));
+    if (!(bits & kMcpDone)) {
+        ESP_LOGE(TAG, "MCP handshake timeout — proceeding anyway");
+    }
 
-    /* Send hello via MQTT (broker auto-routes response to our client_id) */
-    char hello[512];
+    /* Send hello to signaling topic */
+    char hello[384];
     snprintf(hello, sizeof(hello),
              "{\"type\":\"hello\",\"version\":3,\"transport\":\"udp\","
              "\"features\":{\"mcp\":true,\"aec\":false,\"vad\":true},"
              "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":16000,"
              "\"channels\":1,\"frame_duration\":60}}");
-    send_text(hello);
-    s_voice.hello_sent = true;  /* Gate: only process server msgs after hello */
+    int hello_id = send_text(hello);
+    ESP_LOGI(TAG, "Hello sent msg_id=%d topic=%s", hello_id, s_voice.mqtt_publish_topic);
 
     /* Wait for server hello with UDP config */
-    bits = xEventGroupWaitBits(s_voice.events, kServerHello, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
+    bits = xEventGroupWaitBits(s_voice.events, kServerHello,
+                                pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
     if (!(bits & kServerHello)) {
-        ESP_LOGI(TAG, "MQTT hello timed out");
+        ESP_LOGE(TAG, "Server hello timeout");
         return false;
     }
-    ESP_LOGI(TAG, "MQTT hello OK, session=%s", s_voice.session_id);
+    ESP_LOGI(TAG, "Session: %s", s_voice.session_id);
 
-    /* Open UDP socket for audio */
+    /* Open UDP socket for audio send */
     if (s_voice.udp_server[0] && s_voice.udp_port > 0) {
         mbedtls_aes_init(&s_voice.aes_ctx);
-        mbedtls_aes_setkey_enc(&s_voice.aes_ctx, s_voice.aes_key, 128);
+        mbedtls_aes_setkey_enc(&s_voice.aes_ctx, s_voice.udp_key.key, 128);
 
         s_voice.udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (s_voice.udp_fd >= 0) {
             struct sockaddr_in local = {};
             local.sin_family = AF_INET;
-            local.sin_port = 0;  /* any local port */
+            local.sin_port = 0;
             bind(s_voice.udp_fd, (struct sockaddr *)&local, sizeof(local));
-            /* Set a receive timeout so we can check for incoming audio */
-            struct timeval tv = {.tv_sec = 0, .tv_usec = 100000};
+            struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
             setsockopt(s_voice.udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-            ESP_LOGI(TAG, "UDP socket opened -> %s:%d", s_voice.udp_server, s_voice.udp_port);
+            ESP_LOGI(TAG, "UDP -> %s:%d", s_voice.udp_server, s_voice.udp_port);
         }
     }
     return true;
 }
 
+/* ---- Close audio channel ---- */
+
 static void close_audio_channel(void)
 {
-    /* Close UDP */
-    if (s_voice.udp_fd >= 0) {
-        close(s_voice.udp_fd);
-        s_voice.udp_fd = -1;
-        mbedtls_aes_free(&s_voice.aes_ctx);
-    }
-    /* Send goodbye via MQTT */
     if (s_voice.session_id[0]) {
         char msg[192];
         snprintf(msg, sizeof(msg),
@@ -408,142 +457,107 @@ static void close_audio_channel(void)
     }
     s_voice.listening = false;
     s_voice.session_id[0] = '\0';
+    if (s_voice.udp_fd >= 0) {
+        close(s_voice.udp_fd);
+        s_voice.udp_fd = -1;
+        mbedtls_aes_free(&s_voice.aes_ctx);
+    }
+    if (s_voice.mqtt) {
+        esp_mqtt_client_stop(s_voice.mqtt);
+        esp_mqtt_client_destroy(s_voice.mqtt);
+        s_voice.mqtt = nullptr;
+    }
 }
+
+/* ---- Voice task: manual button → MQTT connect → listen → send Opus via UDP ---- */
 
 static void voice_task(void *arg)
 {
     (void)arg;
 
-    while (1) {  /* Outer loop: reconnect forever */
-        /* OTA registration once per boot */
-        if (!s_voice.ota_done.exchange(true)) {
-            ESP_LOGI(TAG, "Starting OTA registration...");
-            esp_err_t oret = xiaozhi_ota_register();
-            ESP_LOGI(TAG, "OTA registration: %s", esp_err_to_name(oret));
-            /* Load MQTT credentials from NVS (populated by OTA) */
-            nvs_handle_t nvs;
-            if (nvs_open("mqtt", NVS_READONLY, &nvs) == ESP_OK) {
-                size_t sz;
-                sz = sizeof(s_voice.mqtt_endpoint);
-                nvs_get_str(nvs, "endpoint", s_voice.mqtt_endpoint, &sz);
-                sz = sizeof(s_voice.mqtt_client_id);
-                nvs_get_str(nvs, "client_id", s_voice.mqtt_client_id, &sz);
-                sz = sizeof(s_voice.mqtt_username);
-                nvs_get_str(nvs, "username", s_voice.mqtt_username, &sz);
-                sz = sizeof(s_voice.mqtt_password);
-                nvs_get_str(nvs, "password", s_voice.mqtt_password, &sz);
-                sz = sizeof(s_voice.mqtt_publish_topic);
-                nvs_get_str(nvs, "publish_topic", s_voice.mqtt_publish_topic, &sz);
-                nvs_close(nvs);
-            }
+    while (1) {
+        ui_chat_voice_set_status("Voice: ready");
+        while (!s_voice.manual_start_requested.exchange(false)) {
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
 
-        /* Settle delay */
-        vTaskDelay(pdMS_TO_TICKS(500));
+        ui_chat_voice_set_status("Voice: connecting...");
+        s_voice.session_active.store(true);
 
-        if (!open_audio_channel()) {
-            ui_chat_voice_set_status("Voice: retry in 3s...");
-            for (int i = 0; i < 6; i++) {
-                vTaskDelay(pdMS_TO_TICKS(500));
-                if (s_voice.manual_start_requested.exchange(false)) break;
-            }
+        /* OTA once */
+        if (!s_voice.ota_registered) {
+            s_voice.ota_registered = (xiaozhi_ota_register() == ESP_OK);
+        }
+        if (!load_mqtt_credentials() || !open_audio_channel()) {
+            ESP_LOGW(TAG, "Voice start failed");
+            s_voice.session_active.store(false);
+            close_audio_channel();
+            ui_chat_voice_set_status("Voice: tap music to retry");
             continue;
         }
 
-        ui_chat_voice_set_status("Voice: say xiaozhixiaozhi");
+        char listen[256];
+        snprintf(listen, sizeof(listen),
+                 "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\"}",
+                 s_voice.session_id);
+        send_text(listen);
+        s_voice.listening = true;
+        s_voice.silence_frames = 0;
+        s_voice.opus_pcm.clear();
+        s_voice.turn_finished.store(false);
+        ui_chat_voice_set_status("Voice: listening...");
 
-        while (s_voice.mqtt && s_voice.session_id[0]) {
-            /* Check for manual listening request */
-            if (s_voice.manual_start_requested.exchange(false)) {
-                char listen[256];
-                snprintf(listen, sizeof(listen),
-                         "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\","
-                         "\"session_id\":\"%s\"}", s_voice.session_id);
-                send_text(listen);
-                s_voice.listening = true;
-                s_voice.silence_frames = 0;
-                s_voice.opus_pcm.clear();
-                ui_chat_voice_set_status("Voice: listening...");
-            }
+        while (s_voice.mqtt && s_voice.session_id[0] && !s_voice.turn_finished.load()) {
 
-            /* Read audio from codec and feed to AFE pipeline */
+            /* Read mic → AFE */
             if (!s_voice.afe_iface || !s_voice.afe || !s_voice.codec) {
                 vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
-            static int16_t *afe_buf = nullptr;
-            static int afe_buf_size = 0;
-            int feed_chunk = s_voice.afe_iface->get_feed_chunksize(s_voice.afe);
-            int needed = feed_chunk * (int)sizeof(int16_t);
-            if (!afe_buf || afe_buf_size < needed) {
-                if (afe_buf) heap_caps_free(afe_buf);
-                afe_buf = (int16_t *)heap_caps_malloc(needed, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-                afe_buf_size = afe_buf ? needed : 0;
-                if (!afe_buf) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
+            int feed = s_voice.afe_iface->get_feed_chunksize(s_voice.afe);
+            int need = feed * (int)sizeof(int16_t);
+            if (!s_voice.afe_buf || s_voice.afe_buf_sz < need) {
+                if (s_voice.afe_buf) heap_caps_free(s_voice.afe_buf);
+                s_voice.afe_buf = (int16_t *)heap_caps_malloc(need, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                s_voice.afe_buf_sz = s_voice.afe_buf ? need : 0;
+                if (!s_voice.afe_buf) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
             }
             size_t i2s_bytes = 0;
-            esp_err_t i2s_ret = i2s_channel_read(s_voice.rx, afe_buf, needed, &i2s_bytes, pdMS_TO_TICKS(50));
-            if (i2s_ret == ESP_OK && i2s_bytes > 0) {
-                s_voice.afe_iface->feed(s_voice.afe, afe_buf);
+            if (i2s_channel_read(s_voice.rx, s_voice.afe_buf, need,
+                                 &i2s_bytes, pdMS_TO_TICKS(50)) == ESP_OK && i2s_bytes > 0) {
+                s_voice.afe_iface->feed(s_voice.afe, s_voice.afe_buf);
             } else {
-                vTaskDelay(pdMS_TO_TICKS(5));
+                vTaskDelay(pdMS_TO_TICKS(5)); continue;
             }
 
             afe_fetch_result_t *result = s_voice.afe_iface->fetch(s_voice.afe);
-            if (!result) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
-
-            /* Wake word detection */
-            if (result->wakeup_state > 0 && !s_voice.listening) {
-                ESP_LOGI(TAG, "Wake word triggered! state=%d", result->wakeup_state);
-                char listen[256];
-                snprintf(listen, sizeof(listen),
-                         "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\","
-                         "\"session_id\":\"%s\"}", s_voice.session_id);
-                send_text(listen);
-                s_voice.listening = true;
-                s_voice.silence_frames = 0;
-                s_voice.opus_pcm.clear();
-                s_voice.post_wake_skip = 5;
-                ui_chat_voice_set_status("Voice: wake word detected");
-            }
-            if (!s_voice.listening || result->data_size == 0) {
-                vTaskDelay(pdMS_TO_TICKS(10));
-                continue;
-            }
-            if (s_voice.post_wake_skip > 0) {
-                s_voice.post_wake_skip--;
+            if (!result || !s_voice.listening || result->data_size == 0) {
                 vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
             }
 
-            /* Opus-encode and send via UDP+AES */
+            /* Opus → AES → UDP send */
             const size_t samples = result->data_size / sizeof(int16_t);
-            s_voice.opus_pcm.insert(s_voice.opus_pcm.end(), result->data, result->data + samples);
+            s_voice.opus_pcm.insert(s_voice.opus_pcm.end(),
+                                     result->data, result->data + samples);
             while (s_voice.opus_pcm.size() >= kOpusFrameSamples) {
                 udp_send_opus(s_voice.opus_pcm.data());
                 s_voice.opus_pcm.erase(s_voice.opus_pcm.begin(),
                                        s_voice.opus_pcm.begin() + kOpusFrameSamples);
             }
-            s_voice.silence_frames = result->vad_state == VAD_SILENCE ? s_voice.silence_frames + 1 : 0;
+            s_voice.silence_frames = (result->vad_state == VAD_SILENCE)
+                                     ? s_voice.silence_frames + 1 : 0;
             if (s_voice.silence_frames > 30) {
                 stop_listening("Voice: processing");
             }
 
-            /* Check for incoming UDP audio (TTS playback) — non-blocking */
-            if (s_voice.udp_fd >= 0) {
-                uint8_t udp_buf[1472];
-                ssize_t rlen = recv(s_voice.udp_fd, udp_buf, sizeof(udp_buf), MSG_DONTWAIT);
-                if (rlen > kUdpHeaderLen) {
-                    ESP_LOGD(TAG, "UDP recv %d bytes", (int)rlen);
-                    /* Incoming audio would be AES-decrypted and played here */
-                }
-            }
+            /* Server responses arrive via MQTT → mqtt_event_handler */
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
 
-        /* Inner loop exited => connection lost */
-        ESP_LOGI(TAG, "MQTT disconnected, reconnecting...");
-        ui_chat_voice_set_status("Voice: reconnecting...");
+        s_voice.session_active.store(false);
         close_audio_channel();
+        ui_chat_voice_set_status("Voice: ready");
     }
 }
 
@@ -553,7 +567,7 @@ static void voice_hardware_init_task(void *arg)
 {
     (void)arg;
 
-    /* ---- Mount NVS & load XiaoZhi credentials ---- */
+    /* ---- Mount NVS and initialise the stable board identity ---- */
     esp_err_t nvs_ret = nvs_flash_init();
     i2c_master_bus_handle_t i2c_handle = NULL;
     (void)i2c_handle;
@@ -567,37 +581,7 @@ static void voice_hardware_init_task(void *arg)
         goto fail;
     }
 
-    ui_chat_voice_set_status("Voice: reading credentials");
-
-    /* Load MQTT credentials (will be updated by OTA later) */
-    {
-        nvs_handle_t mqtt_nvs;
-        if (nvs_open("mqtt", NVS_READONLY, &mqtt_nvs) == ESP_OK) {
-            size_t sz;
-            sz = sizeof(s_voice.mqtt_endpoint);
-            nvs_get_str(mqtt_nvs, "endpoint", s_voice.mqtt_endpoint, &sz);
-            sz = sizeof(s_voice.mqtt_publish_topic);
-            nvs_get_str(mqtt_nvs, "publish_topic", s_voice.mqtt_publish_topic, &sz);
-            nvs_close(mqtt_nvs);
-        }
-    }
-    {
-        nvs_handle_t brd;
-        if (nvs_open("board", NVS_READONLY, &brd) == ESP_OK) {
-            size_t sz = sizeof(s_voice.uuid);
-            nvs_get_str(brd, "uuid", s_voice.uuid, &sz);
-            nvs_close(brd);
-        }
-    }
-    /* Fallback: generate a device UUID from MAC if not stored in NVS */
-    if (s_voice.uuid[0] == '\0') {
-        uint8_t mac[6];
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        snprintf(s_voice.uuid, sizeof(s_voice.uuid),
-                 "%02x%02x%02x-%02x%02x%02x",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        ESP_LOGI(TAG, "Generated UUID from MAC: %s", s_voice.uuid);
-    }
+    /* UUID was already loaded and saved in voice_xiaozhi_start() */
 
     /* ---- Device ID (C6 Wi-Fi STA MAC) ---- */
     ESP_LOGI(TAG, "D_INIT: step1 device_id");
@@ -664,24 +648,18 @@ static void voice_hardware_init_task(void *arg)
         esp_codec_dev_set_in_gain(s_voice.codec, 30.0f);
     }
 
-    /* ---- ESP-SR: WakeNet + AFE ---- */
-    ESP_LOGI(TAG, "D_INIT: step5 ESP-SR");
-    ui_chat_voice_set_status("Voice: load WakeNet");
+    /* ---- ESP-SR AFE: VAD only; the music button starts every turn ---- */
+    ESP_LOGI(TAG, "D_INIT: step5 VAD");
+    ui_chat_voice_set_status("Voice: init VAD");
     {
         s_voice.models = esp_srmodel_init("model");
-        char *wn = s_voice.models ? esp_srmodel_filter(s_voice.models, ESP_WN_PREFIX, nullptr) : nullptr;
-        if (!wn) {
-            ui_chat_voice_set_status("Voice: WakeNet model unavailable");
-            goto fail;
-        }
         afe_config_t *afe_cfg = afe_config_init("M", s_voice.models, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
         afe_cfg->aec_init = false;
         afe_cfg->ns_init = false;
         afe_cfg->vad_init = true;
         afe_cfg->vad_mode = VAD_MODE_0;
         afe_cfg->vad_min_noise_ms = 100;
-        afe_cfg->wakenet_init = true;
-        afe_cfg->wakenet_model_name = wn;
+        afe_cfg->wakenet_init = false;
         afe_cfg->agc_init = false;
         afe_cfg->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
         s_voice.afe_iface = esp_afe_handle_from_config(afe_cfg);
@@ -695,8 +673,8 @@ static void voice_hardware_init_task(void *arg)
     }
 
     /* ---- Opus encoder ---- */
-    ESP_LOGI(TAG, "D_INIT: step6 Opus");
-    ui_chat_voice_set_status("Voice: init Opus");
+    ESP_LOGI(TAG, "D_INIT: step6 Opus enc");
+    ui_chat_voice_set_status("Voice: init Opus enc");
     {
         esp_opus_enc_config_t opus_cfg = {
             .sample_rate = ESP_AUDIO_SAMPLE_RATE_16K, .channel = ESP_AUDIO_MONO,
@@ -705,25 +683,47 @@ static void voice_hardware_init_task(void *arg)
             .application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO, .complexity = 5,
             .enable_fec = false, .enable_dtx = true, .enable_vbr = true,
         };
-        esp_opus_enc_open(&opus_cfg, sizeof(opus_cfg), &s_voice.opus);
+        esp_opus_enc_open(&opus_cfg, sizeof(opus_cfg), &s_voice.opus_enc);
         int frame_bytes = 0;
-        esp_opus_enc_get_frame_size(s_voice.opus, &frame_bytes, &s_voice.opus_output_size);
+        esp_opus_enc_get_frame_size(s_voice.opus_enc, &frame_bytes, &s_voice.opus_enc_out_sz);
     }
-    ESP_LOGI(TAG, "D_INIT: delay before exit");
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    ESP_LOGI(TAG, "D_INIT: step7 creating voice_task");
 
     /* ---- Start voice processing task ---- */
-    ui_chat_voice_set_status("Voice: say xiaozhixiaozhi");
-    ESP_LOGI(TAG, "D_INIT: step7b creating voice_task...");
+    ui_chat_voice_set_status("Voice: ready");
     xTaskCreate(voice_task, "xiaozhi_voice", 32768, nullptr, 4, nullptr);
-    ESP_LOGI(TAG, "D_INIT: sleeping forever to avoid exit crash");
-    while (1) { vTaskDelay(pdMS_TO_TICKS(30000)); }
+
+    /* Init done — free this task's stack */
+    vTaskDelete(NULL);
 
 fail:
     ui_chat_voice_set_status("Voice: init failed");
     ESP_LOGE(TAG, "Hardware init deferred task failed");
-    while (1) { vTaskDelay(pdMS_TO_TICKS(30000)); }
+    vTaskDelete(NULL);
+}
+
+static void ensure_uuid(void)
+{
+    /* Read UUID from NVS, or generate and persist it */
+    nvs_handle_t h;
+    if (nvs_open("board", NVS_READONLY, &h) == ESP_OK) {
+        size_t sz = sizeof(s_voice.uuid);
+        nvs_get_str(h, "uuid", s_voice.uuid, &sz);
+        nvs_close(h);
+    }
+    if (s_voice.uuid[0] == '\0') {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(s_voice.uuid, sizeof(s_voice.uuid),
+                 "%02x%02x%02x-%02x%02x%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        /* Persist so future boots and OTA see the same UUID */
+        if (nvs_open("board", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_str(h, "uuid", s_voice.uuid);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        ESP_LOGI(TAG, "Generated and saved UUID: %s", s_voice.uuid);
+    }
 }
 
 extern "C" esp_err_t voice_xiaozhi_start(void)
@@ -733,6 +733,9 @@ extern "C" esp_err_t voice_xiaozhi_start(void)
     if (s_voice.events != nullptr) {
         return ESP_OK;
     }
+
+    /* Ensure stable device identity before anything that talks to the server */
+    ensure_uuid();
 
     s_voice.events = xEventGroupCreate();
     if (s_voice.events == nullptr) {
@@ -779,7 +782,10 @@ extern "C" esp_err_t xiaozhi_ota_register(void)
         nvs_close(h);
     }
     if (uuid[0]) cJSON_AddStringToObject(root, "uuid", uuid);
-    cJSON_AddStringToObject(root, "board", "esp-p4-function-ev-board");
+    /* board must be a JSON object (the official GetBoardJson() convention) */
+    cJSON *board_obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(board_obj, "name", "esp32_p4_function_ev_board");
+    cJSON_AddItemToObject(root, "board", board_obj);
     cJSON_AddStringToObject(root, "version", "2.4.0");
     {
         cJSON *chip = cJSON_AddObjectToObject(root, "chip");
@@ -796,7 +802,7 @@ extern "C" esp_err_t xiaozhi_ota_register(void)
     }
     {
         cJSON *app = cJSON_AddObjectToObject(root, "app");
-        cJSON_AddStringToObject(app, "name", "emotion_chat");
+        cJSON_AddStringToObject(app, "name", "xiaozhi");
         cJSON_AddStringToObject(app, "version", "2.4.0");
         cJSON_AddStringToObject(app, "idf_version", "v5.5.4");
         cJSON_AddStringToObject(app, "compile_time", __DATE__ " " __TIME__);
@@ -807,6 +813,7 @@ extern "C" esp_err_t xiaozhi_ota_register(void)
     if (!body) return ESP_ERR_NO_MEM;
 
     ESP_LOGI(TAG, "OTA register: POST to OTA server (MAC=%s)", mac);
+    ESP_LOGI(TAG, "OTA body: %s", body);
 
     esp_http_client_config_t cfg = {};
     cfg.url = "https://api.tenclass.net/xiaozhi/ota/";
@@ -858,6 +865,23 @@ extern "C" esp_err_t xiaozhi_ota_register(void)
                             nvs_commit(nvs);
                             nvs_close(nvs);
                             ESP_LOGI(TAG, "MQTT credentials saved to NVS");
+                        }
+                    }
+                    /* WebSocket config (kept as fallback for server compat) */
+                    cJSON *ws = cJSON_GetObjectItemCaseSensitive(r, "websocket");
+                    if (cJSON_IsObject(ws)) {
+                        nvs_handle_t nvs;
+                        if (nvs_open("websocket", NVS_READWRITE, &nvs) == ESP_OK) {
+                            cJSON *v;
+                            v = cJSON_GetObjectItemCaseSensitive(ws, "url");
+                            if (cJSON_IsString(v)) nvs_set_str(nvs, "url", v->valuestring);
+                            v = cJSON_GetObjectItemCaseSensitive(ws, "token");
+                            if (cJSON_IsString(v)) nvs_set_str(nvs, "token", v->valuestring);
+                            v = cJSON_GetObjectItemCaseSensitive(ws, "version");
+                            if (cJSON_IsNumber(v)) nvs_set_i32(nvs, "version", v->valueint);
+                            nvs_commit(nvs);
+                            nvs_close(nvs);
+                            ESP_LOGI(TAG, "WebSocket credentials saved to NVS");
                         }
                     }
                     cJSON_Delete(r);

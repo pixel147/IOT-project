@@ -1,0 +1,1507 @@
+I (96) boot:  5 model            Unknown data     01 82 00a10000ESP-ROM:esp32p4-eco2-20240710
+Build:Jul 10 2024
+rst:0x17 (CHIP_USB_UART_RESET),boot:0xc (SPI_FAST_FLASH_BOOT)
+Core0 Saved PC:0x4ff06410
+Core1 Saved PC:0x4ff15952
+SPI mode:DIO, clock div:2
+load:0x4ff33ce0,len:0x173c
+load:0x4ff29ed0,len:0xff0
+load:0x4ff2cbd0,len:0x3608
+entry 0x4ff29eda
+I (27) boot: ESP-IDF GIT-NOTFOUND 2nd stage bootloader
+I (28) boot: compile time Jul 25 2026 23:20:22
+I (28) boot: Multicore bootloader
+I (29) boot: chip revision: v1.3
+I (31) boot: efuse block revision: v0.3
+I (35) qio_mode: Enabling default flash chip QIO
+I (39) boot.esp32p4: SPI Speed      : 40MHz
+I (43) boot.esp32p4: SPI Mode       : QIO
+I (46) boot.esp32p4: SPI Flash Size : 16MB
+I (50) boot: Enabling RNG early entropy source...
+I (55) boot: Partition Table:
+I (57) boot: ## Label            Usage          Type ST Offset   Length
+I (64) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (70) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (77) boot:  2 factory          factory app      00 00 00010000 00600000
+I (83) boot:  3 slave_fw         Unknown data     01 40 00610000 00200000
+I (90) boot:  4 storage          Unknown data     01 82 00810000 00200000
+I (96) boot:  5 model            Unknown data     01 82 00a10000 00100000
+I (104) boot: End of partition table
+I (106) esp_image: segment 0: paddr=00010020 vaddr=40270020 size=1014a8h (1053864) map
+I (265) esp_image: segment 1: paddr=001114d0 vaddr=30100000 size=00068h (   104) load
+I (266) esp_image: segment 2: paddr=00111540 vaddr=4ff00000 size=0ead8h ( 60120) load
+I (279) esp_image: segment 3: paddr=00120020 vaddr=40000020 size=266058h (2515032) map
+I (639) esp_image: segment 4: paddr=00386080 vaddr=4ff0ead8 size=09818h ( 38936) load
+I (647) esp_image: segment 5: paddr=0038f8a0 vaddr=4ff18300 size=05d68h ( 23912) load
+I (653) esp_image: segment 6: paddr=00395610 vaddr=50108080 size=00020h (    32) load
+I (660) boot: Loaded app from partition at offset 0x10000
+I (660) boot: Disabling RNG early entropy source...
+I (674) hex_psram: vendor id    : 0x0d (AP)
+I (674) hex_psram: Latency      : 0x01 (Fixed)
+I (675) hex_psram: DriveStr.    : 0x00 (25 Ohm)
+I (676) hex_psram: dev id       : 0x03 (generation 4)
+I (680) hex_psram: density      : 0x07 (256 Mbit)
+I (684) hex_psram: good-die     : 0x06 (Pass)
+I (688) hex_psram: SRF          : 0x02 (Slow Refresh)
+I (693) hex_psram: BurstType    : 0x00 ( Wrap)
+I (697) hex_psram: BurstLen     : 0x03 (2048 Byte)
+I (702) hex_psram: BitMode      : 0x01 (X16 Mode)
+I (706) hex_psram: Readlatency  : 0x04 (14 cycles@Fixed)
+I (711) hex_psram: DriveStrength: 0x00 (1/1)
+I (715) MSPI Timing: Enter psram timing tuning
+I (888) esp_psram: Found 32MB PSRAM device
+I (888) esp_psram: Speed: 200MHz
+I (889) hex_psram: psram CS IO is dedicated
+I (889) cpu_start: Multicore app
+I (1796) esp_psram: SPI SRAM memory test OK
+I (1806) cpu_start: GPIO 38 and 37 are used as console UART I/O pins
+I (1807) cpu_start: Pro cpu start user code
+I (1807) cpu_start: cpu freq: 360000000 Hz
+I (1809) app_init: Application information:
+I (1813) app_init: Project name:     display
+I (1817) app_init: App version:      1
+I (1820) app_init: Compile time:     Jul 26 2026 02:32:03
+I (1826) app_init: ELF file SHA256:  2f59f4575...
+I (1830) app_init: ESP-IDF:          GIT-NOTFOUND
+I (1834) efuse_init: Min chip rev:     v0.0
+I (1838) efuse_init: Max chip rev:     v1.99 
+I (1842) efuse_init: Chip rev:         v1.3
+I (1846) heap_init: Initializing. RAM available for dynamic allocation:
+I (1853) heap_init: At 4FF223F0 len 00018BD0 (98 KiB): RETENT_RAM
+I (1858) heap_init: At 4FF3AFC0 len 00004BF0 (18 KiB): RAM
+I (1864) heap_init: At 4FF40000 len 00060000 (384 KiB): RAM
+I (1869) heap_init: At 501080A0 len 00007F60 (31 KiB): RTCRAM
+I (1874) heap_init: At 30100068 len 00001F98 (7 KiB): TCM
+I (1880) esp_psram: Adding pool of 32768K of PSRAM memory to heap allocator
+I (1887) spi_flash: detected chip: gd
+I (1890) spi_flash: flash io: qio
+I (1911) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (1916) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (1923) H_SDIO_DRV: sdio_data_to_rx_buf_task started
+I (1928) main_task: Started on CPU0
+I (1931) esp_psram: Reserving pool of 32K of internal memory for DMA/internal allocations
+I (1939) main_task: Calling app_main()
+I (1942) MAIN: Emotion + LLM Chat Terminal starting
+I (1948) LVGL: Starting LVGL task
+W (1950) ledc: GPIO 26 is not usable, maybe conflict with others
+I (1956) ESP32_P4_EV: MIPI DSI PHY Powered on
+I (1961) ESP32_P4_EV: Install MIPI DSI LCD control panel
+I (1965) ESP32_P4_EV: Install EK79007 LCD control panel
+I (1970) ek79007: version: 2.0.2
+I (2137) ESP32_P4_EV: Display initialized
+I (2137) ESP32_P4_EV: Display resolution 1024x600
+E (2141) lcd_panel: esp_lcd_panel_swap_xy(50): swap_xy is not supported by this panel
+W (2144) i2c.master: Please check pull-up resistances whether be connected properly. Otherwise unexpected behavior would happen. For more detailed information, please read docs
+I (2157) GT911: I2C address initialization procedure skipped - using default GT9xx setup
+I (2167) GT911: TouchPad_ID:0x39,0x31,0x31
+I (2169) GT911: TouchPad_Config_Version:89
+I (2173) ESP32_P4_EV: Setting LCD backlight: 100%
+I (2230) MAIN: Mounting SD card...
+W (2240) ldo: The voltage value 0 is out of the recommended range [500, 2700]
+W (2240) ESP32_P4_EV: Warning: Long filenames on SD card are disabled in menuconfig!
+I (2243) sdmmc_periph: sdmmc_host_init: SDMMC host already initialized, skipping init flow
+Name: NCard
+Type: SDHC
+Speed: 40.00 MHz (limit: 40.00 MHz)
+Size: 29818MB
+CSD: ver=2, sector_size=512, capacity=61067264 read_bl_len=9
+SSR: bus_width=4
+I (2305) SDCARD: SD card mounted at /sdcard
+I (2309) FACE: Loading face detect models from /sdcard/models
+I (2318) dl::Model: model:torch-jit-export, version:0
+
+I (2320) dl::Model: Conv_0: Conv
+I (2324) dl::Model: Conv_2: Conv
+I (2326) dl::Model: Conv_4: Conv
+I (2329) dl::Model: Conv_5: Conv
+I (2332) dl::Model: Conv_7: Conv
+I (2335) dl::Model: Conv_8: Conv
+I (2338) dl::Model: Conv_10: Conv
+I (2341) dl::Model: Conv_26: Conv
+I (2344) dl::Model: Conv_28: Conv
+I (2347) dl::Model: Conv_29: Conv
+I (2350) dl::Model: Conv_32: Conv
+I (2353) dl::Model: Conv_48: Conv
+I (2356) dl::Model: Conv_31: Conv
+I (2359) dl::Model: Conv_34: Conv
+I (2362) dl::Model: Conv_50: Conv
+I (2365) dl::Model: Conv_35: Conv
+I (2368) dl::Model: Conv_38: Conv
+I (2371) dl::Model: Conv_66: Conv
+I (2374) dl::Model: Conv_37: Conv
+I (2377) dl::Model: Conv_40: Conv
+I (2380) dl::Model: Conv_68: Conv
+I (2383) dl::Model: Conv_41: Conv
+I (2386) dl::Model: Conv_69: Conv
+I (2389) dl::Model: Conv_72: Conv
+I (2392) dl::Model: Conv_43: Conv
+I (2395) dl::Model: Conv_71: Conv
+I (2399) dl::Model: Conv_74: Conv
+I (2401) dl::Model: Concat_44: Concat
+I (2405) dl::Model: Conv_75: Conv
+I (2408) dl::Model: Conv_78: Conv
+I (2411) dl::Model: Conv_45: Conv
+I (2414) dl::Model: Conv_46: Conv
+I (2417) dl::Model: Conv_47: Conv
+I (2420) dl::Model: Conv_77: Conv
+I (2423) dl::Model: Conv_80: Conv
+I (2426) dl::Model: Conv_81: Conv
+I (2429) dl::Model: Conv_83: Conv
+I (2432) dl::Model: Concat_84: Concat
+I (2435) dl::Model: Conv_85: Conv
+I (2439) dl::Model: Conv_86: Conv
+I (2442) dl::Model: Conv_87: Conv
+I (2453) MemoryManagerGreedy: Maximum mermory size: 202400
+
+I (2461) dl::Model: model:torch-jit-export, version:0
+
+I (2462) dl::Model: Conv_0: Conv
+I (2463) dl::Model: PRelu_1: PRelu
+I (2463) dl::Model: Conv_2: Conv
+I (2464) dl::Model: PRelu_3: PRelu
+I (2467) dl::Model: Conv_4: Conv
+I (2470) dl::Model: PRelu_5: PRelu
+I (2473) dl::Model: Conv_6: Conv
+I (2477) dl::Model: Conv_7: Conv
+I (2479) dl::Model: PRelu_8: PRelu
+I (2482) dl::Model: Conv_9: Conv
+I (2486) dl::Model: Conv_10: Conv
+I (2489) dl::Model: PRelu_11: PRelu
+I (2492) dl::Model: Conv_12: Conv
+I (2495) dl::Model: PRelu_13: PRelu
+I (2498) dl::Model: Conv_14: Conv
+I (2502) dl::Model: Conv_15: Conv
+I (2506) dl::Model: PRelu_16: PRelu
+I (2507) dl::Model: Conv_17: Conv
+I (2510) dl::Model: PRelu_18: PRelu
+I (2513) dl::Model: Conv_19: Conv
+I (2521) dl::Model: Conv_20: Conv
+I (2522) dl::Model: Conv_21: Conv
+I (2523) dl::Model: Conv_22: Conv
+I (2531) MemoryManagerGreedy: Maximum mermory size: 49232
+
+I (2534) FACE: Face detector ready
+I (2534) EMO_ESPDL: Loading ESP-DL model from /sdcard/models/emotion_cnn_aug_pt.espdl
+I (2747) dl::Model: model:main_graph, version:0
+
+I (2748) dl::Model: /features/features.0/shortcut/Conv: Conv
+I (2749) dl::Model: /features/features.0/conv1/Conv: Conv
+I (2751) dl::Model: /features/features.0/conv2/Conv: Conv
+I (2756) dl::Model: /features/features.0/Add: Add
+I (2761) dl::Model: /features/features.0/relu_1/Relu: Relu
+I (2766) dl::Model: /features/features.1/MaxPool: MaxPool
+I (2771) dl::Model: /features/features.2/shortcut/Conv: Conv
+I (2777) dl::Model: /features/features.2/conv1/Conv: Conv
+I (2782) dl::Model: /features/features.2/conv2/Conv: Conv
+I (2787) dl::Model: /features/features.2/Add: Add
+I (2791) dl::Model: /features/features.2/relu_1/Relu: Relu
+I (2796) dl::Model: /features/features.3/MaxPool: MaxPool
+I (2801) dl::Model: /features/features.4/shortcut/Conv: Conv
+I (2807) dl::Model: /features/features.4/conv1/Conv: Conv
+I (2812) dl::Model: /features/features.4/conv2/Conv: Conv
+I (2817) dl::Model: /features/features.4/Add: Add
+I (2821) dl::Model: /features/features.4/relu_1/Relu: Relu
+I (2827) dl::Model: /features/features.5/MaxPool: MaxPool
+I (2832) dl::Model: /features/features.6/shortcut/Conv: Conv
+I (2837) dl::Model: /features/features.6/conv1/Conv: Conv
+I (2842) dl::Model: /features/features.6/conv2/Conv: Conv
+I (2848) dl::Model: /features/features.6/Add: Add
+I (2852) dl::Model: /features/features.6/relu_1/Relu: Relu
+I (2857) dl::Model: /features/features.7/MaxPool: MaxPool
+I (2862) dl::Model: /classifier/classifier.0/GlobalAveragePool: GlobalAveragePool
+I (2869) dl::Model: PPQ_Operation_0: Transpose
+I (2873) dl::Model: /classifier/classifier.1/Flatten: Flatten
+I (2879) dl::Model: /classifier/classifier.3/Gemm: Gemm
+I (2892) MemoryManagerGreedy: Maximum mermory size: 57600
+
+I (2895) EMO_ESPDL: Model inputs: 1
+I (2895) EMO_ESPDL:   Input 'input.1': shape [1 x 48 x 48 x 1], dtype=3, exponent=-7
+I (2900) EMO_ESPDL: Model outputs: 1
+I (2903) EMO_ESPDL:   Output '93': shape [1x7], dtype=3, exponent=-3
+I (2909) EMO_ESPDL: ESP-DL emotion model ready (expected <10ms inference)
+I (2916) MAIN: Initializing WiFi
+I (2944) transport: Attempt connection with slave: retry[0]
+W (2944) H_SDIO_DRV: Reset slave using GPIO[54]
+I (2944) os_wrapper_esp: GPIO [54] configured
+I (4467) sdio_wrapper: SDIO master: Slot 1, Data-Lines: 4-bit Freq(KHz)[40000 KHz]
+I (4467) sdio_wrapper: GPIOs: CLK[18] CMD[19] D0[14] D1[15] D2[16] D3[17] Slave_Reset[54]
+I (4471) sdio_wrapper: Queues: Tx[20] Rx[20] SDIO-Rx-Mode[1]
+I (4512) sdio_wrapper: Function 0 Blocksize: 512
+I (4512) sdio_wrapper: Function 1 Blocksize: 512
+I (4612) H_SDIO_DRV: Card init success, TRANSPORT_RX_ACTIVE
+I (4612) transport: set_transport_state: 1
+I (4612) transport: Waiting for esp_hosted slave to be ready
+I (4623) H_SDIO_DRV: SDIO Host operating in STREAMING MODE
+I (4623) H_SDIO_DRV: Open data path at slave
+I (4623) H_SDIO_DRV: Starting SDIO process rx task
+I (4652) H_SDIO_DRV: Received ESP_PRIV_IF type message
+I (4652) transport: Received INIT event from ESP32 peripheral
+I (4652) transport: EVENT: 12
+I (4654) transport: Identified slave [esp32c6]
+I (4658) transport: EVENT: 11
+I (4661) transport: capabilities: 0xd
+I (4664) transport: Features supported are:
+I (4668) transport: 	 * WLAN
+I (4671) transport: 	   - HCI over SDIO
+I (4674) transport: 	   - BLE only
+I (4677) transport: EVENT: 13
+I (4680) transport: ESP board type is : 13 
+
+I (4684) transport: Base transport is set-up, TRANSPORT_TX_ACTIVE
+I (4690) H_API: Transport active
+I (4693) transport: Slave chip Id[12]
+I (4696) transport: raw_tp_dir[-], flow_ctrl: low[60] high[80]
+I (4702) transport: transport_delayed_init
+I (4706) esp_cli: Registering command: crash
+I (4710) esp_cli: Registering command: reboot
+I (4714) esp_cli: Registering command: mem-dump
+I (4718) esp_cli: Registering command: task-dump
+I (4722) esp_cli: Registering command: cpu-dump
+I (4727) esp_cli: Registering command: heap-trace
+I (4731) esp_cli: Registering command: sock-dump
+I (4736) esp_cli: Registering command: host-power-save
+I (4740) hci_stub_drv: Host BT Support: Disabled
+I (4745) H_SDIO_DRV: Received INIT event
+I (4748) H_SDIO_DRV: Event type: 0x22
+I (4752) H_SDIO_DRV: Write thread started
+I (4924) RPC_WRAP: Coprocessor Boot-up
+I (5185) WIFI: Stack initialized (STA idle, scan-ready)
+I (5185) MAIN: Connecting WiFi to Redmi K70…
+I (5188) RPC_WRAP: ESP Event: wifi station started
+I (5219) RPC_WRAP: ESP Event: wifi station started
+I (5225) RPC_WRAP: ESP Event: wifi station stopped
+W (5293) rpc_rsp: Hosted RPC_Resp [0x21a], uid [5], resp code [12298]
+I (5311) WIFI: STA started — idle (scan-only mode)
+I (5393) WIFI: Connecting to Redmi K70…
+I (5393) CAM: Initializing camera via BSP...
+I (5395) sc2336: Detected Camera sensor PID=0xcb3a
+I (5395) RPC_WRAP: ESP Event: wifi station started
+I (5402) RPC_WRAP: ESP Event: wifi station started
+I (5426) CAM: BSP camera started
+I (5627) CAM: V4L2 format: RGBP (0x50424752)
+I (5627) CAM: Camera format: 640x480 stride=0 sizeimage=0
+I (5627) CAM: PSRAM fb allocated: 614400 bytes
+E (5631) esp_video: video->ops->set_parm=102
+I (5633) CAM: Actual format: RGBP 640x480 stride=0
+I (5637) CAM: Actual framerate: 50/1 = 50.0 fps
+I (5642) CAM: Camera started: 640x480 @ 30 fps
+I (5642) CAM: Camera capture task started
+I (5673) WIFI: STA started — connecting…
+I (5673) H_API: esp_wifi_remote_connect
+I (5750) latency: detect::preprocess: 8945 us
+
+I (5751) latency: detect::forward: 17864 us
+
+I (5751) latency: detect::postprocess: 318 us
+
+I (6048) latency: detect::preprocess: 8171 us
+
+I (6049) latency: detect::forward: 18050 us
+
+I (6049) latency: detect::postprocess: 333 us
+
+I (6351) latency: detect::preprocess: 8645 us
+
+I (6351) latency: detect::forward: 17123 us
+
+I (6352) latency: detect::postprocess: 316 us
+
+I (6649) latency: detect::preprocess: 8189 us
+
+I (6650) latency: detect::forward: 17870 us
+
+I (6650) latency: detect::postprocess: 323 us
+
+I (6670) RPC_WRAP: ESP Event: Station mode: Disconnected
+W (6671) WIFI: Disconnected (reason=2), reconnecting…
+I (6672) H_API: esp_wifi_remote_connect
+I (6952) latency: detect::preprocess: 8819 us
+
+I (6952) latency: detect::forward: 17238 us
+
+I (6952) latency: detect::postprocess: 325 us
+
+I (7251) latency: detect::preprocess: 8173 us
+
+I (7252) latency: detect::forward: 17830 us
+
+I (7252) latency: detect::postprocess: 312 us
+
+I (7550) latency: detect::preprocess: 8231 us
+
+I (7550) latency: detect::forward: 17868 us
+
+I (7550) latency: detect::postprocess: 324 us
+
+I (7847) latency: detect::preprocess: 8797 us
+
+I (7848) latency: detect::forward: 17119 us
+
+I (7848) latency: detect::postprocess: 330 us
+
+I (8147) latency: detect::preprocess: 8192 us
+
+I (8148) latency: detect::forward: 17899 us
+
+I (8148) latency: detect::postprocess: 320 us
+
+I (8445) latency: detect::preprocess: 8223 us
+
+I (8446) latency: detect::forward: 17563 us
+
+I (8446) latency: detect::postprocess: 323 us
+
+I (8742) latency: detect::preprocess: 8786 us
+
+I (8743) latency: detect::forward: 17146 us
+
+I (8743) latency: detect::postprocess: 330 us
+
+I (9043) latency: detect::preprocess: 8205 us
+
+I (9043) latency: detect::forward: 17837 us
+
+I (9043) latency: detect::postprocess: 316 us
+
+I (9101) RPC_WRAP: ESP Event: Station mode: Disconnected
+W (9102) WIFI: Disconnected (reason=205), reconnecting…
+I (9102) H_API: esp_wifi_remote_connect
+I (9294) latency: detect::preprocess: 8198 us
+
+I (9295) latency: detect::forward: 17512 us
+
+I (9295) latency: detect::postprocess: 330 us
+
+I (9410) RPC_WRAP: ESP Event: Station mode: Connected
+I (9411) esp_wifi_remote: esp_wifi_internal_reg_rxcb: sta: 0x4021bf2e
+I (9549) latency: detect::preprocess: 8127 us
+
+I (9550) latency: detect::forward: 17651 us
+
+I (9550) latency: detect::postprocess: 316 us
+
+I (9846) latency: detect::preprocess: 8166 us
+
+I (9846) latency: detect::forward: 18075 us
+
+I (9847) latency: detect::postprocess: 319 us
+
+I (10096) latency: detect::preprocess: 8783 us
+
+I (10096) latency: detect::forward: 16949 us
+
+I (10097) latency: detect::postprocess: 321 us
+
+I (10347) latency: detect::preprocess: 8158 us
+
+I (10347) latency: detect::forward: 17455 us
+
+I (10348) latency: detect::postprocess: 316 us
+
+I (10483) esp_netif_handlers: sta ip: 10.36.142.199, mask: 255.255.255.0, gw: 10.36.142.17
+I (10484) WIFI: Got IP: 10.36.142.199
+I (10492) MAIN: WiFi connected
+I (10493) OpenAI: OpenAI create, version: 1.1.0
+I (10493) LLM: Ready: model=deepseek-v4-flash base=https://api.deepseek.com/v1/ tokens=256 temp=0.8
+I (10500) LLM: Emotion provider registered
+I (10504) MAIN: LLM ready: deepseek-v4-flash
+I (10526) MAIN: System ready — camera preview + UI running
+I (10530) XIAOZHI_VOICE: D_INIT: step1 device_id
+I (10527) main_task: Returned from app_main()
+I (10542) XIAOZHI_VOICE: D_INIT: step2 I2C
+I (10544) XIAOZHI_VOICE: D_INIT: step3 I2S
+W (10547) i2s_common: dma frame num is adjusted to 256 to align the dma buffer with 64, bufsize = 512
+W (10551) i2s_common: dma frame num is adjusted to 256 to align the dma buffer with 64, bufsize = 512
+I (10562) XIAOZHI_VOICE: D_INIT: step3b I2S RX enabled
+I (10563) XIAOZHI_VOICE: D_INIT: step4 codec
+I (10577) ES8311: Work in Slave mode
+W (10583) i2s_common: dma frame num is adjusted to 256 to align the dma buffer with 64, bufsize = 512
+I (10584) I2S_IF: STD: TX, data_bit: 16, slot_bit: 16, ws_width: 16, slot_mode: MONO, slot_mask: 0x1
+I (10590) I2S_IF: STD: TX, sample_rate_hz: 16000, mclk_multiple: 256, clk_src: 0
+W (10597) i2s_common: dma frame num is adjusted to 256 to align the dma buffer with 64, bufsize = 512
+I (10607) I2S_IF: STD: RX, data_bit: 16, slot_bit: 16, ws_width: 16, slot_mode: MONO, slot_mask: 0x1
+I (10615) I2S_IF: STD: RX, sample_rate_hz: 16000, mclk_multiple: 256, clk_src: 0
+I (10619) latency: detect::preprocess: 8516 us
+
+I (10626) latency: detect::forward: 19170 us
+
+I (10630) latency: detect::postprocess: 325 us
+
+I (10645) Adev_Codec: Open codec device OK
+I (10646) XIAOZHI_VOICE: D_INIT: step5 ESP-SR
+I (10649) MODEL_LOADER: The storage free size is 61952 KB
+I (10650) MODEL_LOADER: The partition size is 1024 KB
+I (10654) MODEL_LOADER: Successfully load srmodels
+I (10661) AFE_CONFIG: Set WakeNet Model: wn9_nihaoxiaozhi_tts
+MC Quantized wakenet9: wakenet9l_tts1h8_你好小智_3_0.631_0.635, tigger:v4, mode:0, p:0, (May 25 2026 15:54:22)
+I (10760) AFE: AFE Version: (1MIC_V251128)
+I (10762) AFE: Input PCM Config: total 1 channels(1 microphone, 0 playback), sample rate:16000
+I (10773) AFE: AFE Pipeline: [input] -> |VAD(WebRTC)| -> |WakeNet(wn9_nihaoxiaozhi_tts,)| -> [output]
+I (10780) XIAOZHI_VOICE: D_INIT: step5b AFE=0x4ff66bf8
+I (10784) XIAOZHI_VOICE: D_INIT: step6 Opus
+I (10790) XIAOZHI_VOICE: D_INIT: delay before exit
+I (10884) latency: detect::preprocess: 8194 us
+
+I (10885) latency: detect::forward: 18096 us
+
+I (10885) latency: detect::postprocess: 320 us
+
+I (11184) latency: detect::preprocess: 8795 us
+
+I (11185) latency: detect::forward: 17132 us
+
+I (11185) latency: detect::postprocess: 325 us
+
+I (11482) latency: detect::preprocess: 8654 us
+
+I (11483) latency: detect::forward: 17759 us
+
+I (11483) latency: detect::postprocess: 332 us
+
+I (11781) latency: detect::preprocess: 8195 us
+
+I (11781) latency: detect::forward: 18172 us
+
+I (11781) latency: detect::postprocess: 316 us
+
+I (12078) latency: detect::preprocess: 8196 us
+
+I (12078) latency: detect::forward: 17681 us
+
+I (12079) latency: detect::postprocess: 322 us
+
+I (12376) latency: detect::preprocess: 8658 us
+
+I (12377) latency: detect::forward: 17661 us
+
+I (12377) latency: detect::postprocess: 530 us
+
+I (12676) latency: detect::preprocess: 8197 us
+
+I (12676) latency: detect::forward: 18184 us
+
+I (12676) latency: detect::postprocess: 320 us
+
+I (12793) XIAOZHI_VOICE: D_INIT: step7 creating voice_task
+I (12794) XIAOZHI_VOICE: D_INIT: step7b creating voice_task...
+I (12795) XIAOZHI_VOICE: Starting OTA registration...
+I (12800) XIAOZHI_VOICE: D_INIT: sleeping forever to avoid exit crash
+I (12809) XIAOZHI_VOICE: OTA register: POST to OTA server (MAC=b4:3a:45:99:bf:3c)
+I (12979) latency: detect::preprocess: 8736 us
+
+I (12980) latency: detect::forward: 17072 us
+
+I (12981) latency: detect::postprocess: 340 us
+
+I (13281) latency: detect::preprocess: 8253 us
+
+I (13281) latency: detect::forward: 18101 us
+
+I (13282) latency: detect::postprocess: 320 us
+
+I (13577) latency: detect::preprocess: 8292 us
+
+I (13578) latency: detect::forward: 17597 us
+
+I (13578) latency: detect::postprocess: 326 us
+
+I (13878) latency: detect::preprocess: 8500 us
+
+I (13878) latency: detect::forward: 17961 us
+
+I (13879) latency: detect::postprocess: 322 us
+
+I (14177) latency: detect::preprocess: 8264 us
+
+I (14178) latency: detect::forward: 18080 us
+
+I (14178) latency: detect::postprocess: 328 us
+
+I (14476) latency: detect::preprocess: 8821 us
+
+I (14476) latency: detect::forward: 17086 us
+
+I (14476) latency: detect::postprocess: 331 us
+
+I (14767) latency: detect::preprocess: 8763 us
+
+I (14768) latency: detect::forward: 17014 us
+
+I (14768) latency: detect::postprocess: 328 us
+
+I (15067) latency: detect::preprocess: 8204 us
+
+I (15067) latency: detect::forward: 17486 us
+
+I (15067) latency: detect::postprocess: 318 us
+
+I (15364) latency: detect::preprocess: 8247 us
+
+I (15364) latency: detect::forward: 17538 us
+
+I (15365) latency: detect::postprocess: 326 us
+
+I (15661) latency: detect::preprocess: 8724 us
+
+I (15661) latency: detect::forward: 16965 us
+
+I (15662) latency: detect::postprocess: 321 us
+
+I (15962) latency: detect::preprocess: 8622 us
+
+I (15963) latency: detect::forward: 17903 us
+
+I (15963) latency: detect::postprocess: 317 us
+
+I (16258) latency: detect::preprocess: 8263 us
+
+I (16259) latency: detect::forward: 17776 us
+
+I (16259) latency: detect::postprocess: 334 us
+
+I (16507) latency: detect::preprocess: 8803 us
+
+I (16508) latency: detect::forward: 16977 us
+
+I (16508) latency: detect::postprocess: 320 us
+
+I (16805) latency: detect::preprocess: 8503 us
+
+I (16805) latency: detect::forward: 17817 us
+
+I (16806) latency: detect::postprocess: 321 us
+
+I (17102) latency: detect::preprocess: 8189 us
+
+I (17103) latency: detect::forward: 18131 us
+
+I (17103) latency: detect::postprocess: 320 us
+
+I (17401) latency: detect::preprocess: 8834 us
+
+I (17402) latency: detect::forward: 17007 us
+
+I (17402) latency: detect::postprocess: 332 us
+
+I (17699) latency: detect::preprocess: 8655 us
+
+I (17699) latency: detect::forward: 17582 us
+
+I (17700) latency: detect::postprocess: 325 us
+
+I (17998) latency: detect::preprocess: 8235 us
+
+I (17998) latency: detect::forward: 18107 us
+
+I (17999) latency: detect::postprocess: 316 us
+
+I (18296) latency: detect::preprocess: 8840 us
+
+I (18297) latency: detect::forward: 16985 us
+
+I (18297) latency: detect::postprocess: 323 us
+
+I (18594) latency: detect::preprocess: 8731 us
+
+I (18594) latency: detect::forward: 17622 us
+
+I (18594) latency: detect::postprocess: 330 us
+
+I (18892) latency: detect::preprocess: 8241 us
+
+I (18893) latency: detect::forward: 18087 us
+
+I (18893) latency: detect::postprocess: 322 us
+
+I (19191) latency: detect::preprocess: 8848 us
+
+I (19192) latency: detect::forward: 17047 us
+
+I (19192) latency: detect::postprocess: 327 us
+
+I (19490) latency: detect::preprocess: 8733 us
+
+I (19490) latency: detect::forward: 17884 us
+
+I (19491) latency: detect::postprocess: 323 us
+
+I (19787) latency: detect::preprocess: 8239 us
+
+I (19788) latency: detect::forward: 18040 us
+
+I (19788) latency: detect::postprocess: 319 us
+
+E (19816) esp-tls: couldn't get hostname for :api.tenclass.net: getaddrinfo() returns 202, addrinfo=0x0
+E (19817) esp-tls: Failed to open new connection
+E (19819) transport_base: Failed to open a new connection
+E (19824) HTTP_CLIENT: Connection failed, sock < 0
+W (19829) XIAOZHI_VOICE: OTA HTTP open failed: ESP_ERR_HTTP_CONNECT
+I (19835) XIAOZHI_VOICE: OTA registration: ESP_ERR_HTTP_CONNECT
+I (20036) latency: detect::preprocess: 8294 us
+
+I (20036) latency: detect::forward: 17465 us
+
+I (20037) latency: detect::postprocess: 317 us
+
+I (20335) latency: detect::preprocess: 8711 us
+
+I (20336) latency: detect::forward: 17597 us
+
+I (20336) latency: detect::postprocess: 320 us
+
+I (20343) XIAOZHI_VOICE: MQTT connecting to mqtts://mqtt.xiaozhi.me:8883 as GID_test@@@b4_3a_45_99_bf_3c@@@96ac2b5b-4d69-446e-9148-65afac8add81
+I (20588) latency: detect::preprocess: 8271 us
+
+I (20588) latency: detect::forward: 18070 us
+
+I (20588) latency: detect::postprocess: 316 us
+
+I (20840) latency: detect::preprocess: 8732 us
+
+I (20840) latency: detect::forward: 17191 us
+
+I (20841) latency: detect::postprocess: 317 us
+
+I (21138) latency: detect::preprocess: 8186 us
+
+I (21139) latency: detect::forward: 17795 us
+
+I (21139) latency: detect::postprocess: 319 us
+
+I (21436) latency: detect::preprocess: 8218 us
+
+I (21437) latency: detect::forward: 17538 us
+
+I (21437) latency: detect::postprocess: 323 us
+
+I (21738) latency: detect::preprocess: 8690 us
+
+I (21739) latency: detect::forward: 17773 us
+
+I (21739) latency: detect::postprocess: 318 us
+
+I (22038) latency: detect::preprocess: 8232 us
+
+I (22039) latency: detect::forward: 18096 us
+
+I (22039) latency: detect::postprocess: 327 us
+
+I (22337) latency: detect::preprocess: 8821 us
+
+I (22338) latency: detect::forward: 17075 us
+
+I (22338) latency: detect::postprocess: 333 us
+
+I (22632) latency: detect::preprocess: 8707 us
+
+I (22633) latency: detect::forward: 17398 us
+
+I (22634) latency: detect::postprocess: 501 us
+
+I (22930) latency: detect::preprocess: 8199 us
+
+I (22930) latency: detect::forward: 17928 us
+
+I (22930) latency: detect::postprocess: 318 us
+
+I (23180) latency: detect::preprocess: 8232 us
+
+I (23181) latency: detect::forward: 17473 us
+
+I (23181) latency: detect::postprocess: 326 us
+
+I (23432) latency: detect::preprocess: 8709 us
+
+I (23432) latency: detect::forward: 17715 us
+
+I (23432) latency: detect::postprocess: 321 us
+
+I (23731) latency: detect::preprocess: 8243 us
+
+I (23731) latency: detect::forward: 18147 us
+
+I (23731) latency: detect::postprocess: 321 us
+
+I (24029) latency: detect::preprocess: 8798 us
+
+I (24030) latency: detect::forward: 17084 us
+
+I (24030) latency: detect::postprocess: 330 us
+
+I (24328) latency: detect::preprocess: 8510 us
+
+I (24329) latency: detect::forward: 17928 us
+
+I (24329) latency: detect::postprocess: 326 us
+
+I (24579) latency: detect::preprocess: 8236 us
+
+I (24580) latency: detect::forward: 18079 us
+
+I (24580) latency: detect::postprocess: 319 us
+
+I (24877) latency: detect::preprocess: 8803 us
+
+I (24878) latency: detect::forward: 17116 us
+
+I (24878) latency: detect::postprocess: 327 us
+
+I (25175) latency: detect::preprocess: 8647 us
+
+I (25175) latency: detect::forward: 18074 us
+
+I (25176) latency: detect::postprocess: 318 us
+
+I (25425) latency: detect::preprocess: 8216 us
+
+I (25426) latency: detect::forward: 18141 us
+
+I (25426) latency: detect::postprocess: 337 us
+
+I (25721) latency: detect::preprocess: 8293 us
+
+I (25721) latency: detect::forward: 17591 us
+
+I (25721) latency: detect::postprocess: 320 us
+
+I (26022) latency: detect::preprocess: 8290 us
+
+I (26022) latency: detect::forward: 17775 us
+
+I (26023) latency: detect::postprocess: 315 us
+
+I (26321) latency: detect::preprocess: 8188 us
+
+I (26321) latency: detect::forward: 18081 us
+
+I (26322) latency: detect::postprocess: 323 us
+
+I (26620) latency: detect::preprocess: 8756 us
+
+I (26621) latency: detect::forward: 17183 us
+
+I (26621) latency: detect::postprocess: 321 us
+
+I (26919) latency: detect::preprocess: 8170 us
+
+I (26920) latency: detect::forward: 17901 us
+
+I (26920) latency: detect::postprocess: 322 us
+
+I (27219) latency: detect::preprocess: 8209 us
+
+I (27220) latency: detect::forward: 17603 us
+
+I (27220) latency: detect::postprocess: 322 us
+
+E (27355) esp-tls: couldn't get hostname for :mqtt.xiaozhi.me: getaddrinfo() returns 202, addrinfo=0x0
+E (27356) esp-tls: Failed to open new connection
+E (27358) transport_base: Failed to open a new connection
+E (27363) mqtt_client: Error transport connect
+W (27367) XIAOZHI_VOICE: MQTT error
+I (27371) XIAOZHI_VOICE: MQTT disconnected
+I (27523) latency: detect::preprocess: 8188 us
+
+I (27523) latency: detect::forward: 17656 us
+
+I (27524) latency: detect::postprocess: 354 us
+
+I (27821) latency: detect::preprocess: 8243 us
+
+I (27821) latency: detect::forward: 18016 us
+
+I (27822) latency: detect::postprocess: 321 us
+
+I (28120) latency: detect::preprocess: 8792 us
+
+I (28121) latency: detect::forward: 17082 us
+
+I (28121) latency: detect::postprocess: 323 us
+
+I (28417) latency: detect::preprocess: 8290 us
+
+I (28417) latency: detect::forward: 17629 us
+
+I (28417) latency: detect::postprocess: 317 us
+
+I (28716) latency: detect::preprocess: 8250 us
+
+I (28716) latency: detect::forward: 18042 us
+
+I (28717) latency: detect::postprocess: 317 us
+
+I (29014) latency: detect::preprocess: 8755 us
+
+I (29015) latency: detect::forward: 17140 us
+
+I (29015) latency: detect::postprocess: 321 us
+
+I (29314) latency: detect::preprocess: 8192 us
+
+I (29315) latency: detect::forward: 17877 us
+
+I (29315) latency: detect::postprocess: 317 us
+
+I (29613) latency: detect::preprocess: 8245 us
+
+I (29614) latency: detect::forward: 17570 us
+
+I (29614) latency: detect::postprocess: 326 us
+
+I (29912) latency: detect::preprocess: 8702 us
+
+I (29912) latency: detect::forward: 17132 us
+
+I (29913) latency: detect::postprocess: 324 us
+
+I (30210) latency: detect::preprocess: 8216 us
+
+I (30211) latency: detect::forward: 17679 us
+
+I (30211) latency: detect::postprocess: 317 us
+
+I (30509) latency: detect::preprocess: 8236 us
+
+I (30510) latency: detect::forward: 17591 us
+
+I (30510) latency: detect::postprocess: 319 us
+
+I (30812) latency: detect::preprocess: 8085 us
+
+I (30813) latency: detect::forward: 17697 us
+
+I (30813) latency: detect::postprocess: 315 us
+
+I (31110) latency: detect::preprocess: 8196 us
+
+I (31111) latency: detect::forward: 18188 us
+
+I (31111) latency: detect::postprocess: 319 us
+
+I (31408) latency: detect::preprocess: 8734 us
+
+I (31409) latency: detect::forward: 17175 us
+
+I (31409) latency: detect::postprocess: 332 us
+
+I (31705) latency: detect::preprocess: 8667 us
+
+I (31705) latency: detect::forward: 17798 us
+
+I (31706) latency: detect::postprocess: 321 us
+
+I (31997) latency: detect::preprocess: 8504 us
+
+I (31997) latency: detect::forward: 17839 us
+
+I (31998) latency: detect::postprocess: 320 us
+
+I (32295) latency: detect::preprocess: 8246 us
+
+I (32296) latency: detect::forward: 18036 us
+
+I (32296) latency: detect::postprocess: 327 us
+
+I (32544) latency: detect::preprocess: 8832 us
+
+I (32545) latency: detect::forward: 17038 us
+
+I (32545) latency: detect::postprocess: 326 us
+
+I (32796) latency: detect::preprocess: 8138 us
+
+I (32797) latency: detect::forward: 17646 us
+
+I (32797) latency: detect::postprocess: 320 us
+
+I (33095) latency: detect::preprocess: 8187 us
+
+I (33096) latency: detect::forward: 17661 us
+
+I (33096) latency: detect::postprocess: 325 us
+
+I (33392) latency: detect::preprocess: 8793 us
+
+I (33393) latency: detect::forward: 17144 us
+
+I (33393) latency: detect::postprocess: 328 us
+
+I (33690) latency: detect::preprocess: 8451 us
+
+I (33691) latency: detect::forward: 17870 us
+
+I (33691) latency: detect::postprocess: 323 us
+
+I (33940) latency: detect::preprocess: 8177 us
+
+I (33941) latency: detect::forward: 18126 us
+
+I (33941) latency: detect::postprocess: 329 us
+
+I (34237) latency: detect::preprocess: 8277 us
+
+I (34238) latency: detect::forward: 17747 us
+
+I (34238) latency: detect::postprocess: 325 us
+
+I (34536) latency: detect::preprocess: 8634 us
+
+I (34536) latency: detect::forward: 17550 us
+
+I (34536) latency: detect::postprocess: 323 us
+
+I (34830) latency: detect::preprocess: 8211 us
+
+I (34831) latency: detect::forward: 17698 us
+
+I (34831) latency: detect::postprocess: 331 us
+
+I (35127) latency: detect::preprocess: 8273 us
+
+I (35128) latency: detect::forward: 17858 us
+
+I (35128) latency: detect::postprocess: 329 us
+
+I (35355) XIAOZHI_VOICE: MQTT connect timed out
+I (35427) latency: detect::preprocess: 8768 us
+
+I (35427) latency: detect::forward: 17104 us
+
+I (35427) latency: detect::postprocess: 320 us
+
+I (35677) latency: detect::preprocess: 8193 us
+
+I (35678) latency: detect::forward: 17582 us
+
+I (35678) latency: detect::postprocess: 329 us
+
+I (35979) latency: detect::preprocess: 8425 us
+
+I (35979) latency: detect::forward: 17636 us
+
+I (35980) latency: detect::postprocess: 320 us
+
+I (36280) latency: detect::preprocess: 8135 us
+
+I (36280) latency: detect::forward: 17799 us
+
+I (36281) latency: detect::postprocess: 313 us
+
+I (36578) latency: detect::preprocess: 8200 us
+
+I (36578) latency: detect::forward: 18192 us
+
+I (36578) latency: detect::postprocess: 321 us
+
+I (36875) latency: detect::preprocess: 8762 us
+
+I (36876) latency: detect::forward: 17133 us
+
+I (36876) latency: detect::postprocess: 328 us
+
+I (37175) latency: detect::preprocess: 8119 us
+
+I (37176) latency: detect::forward: 17789 us
+
+I (37176) latency: detect::postprocess: 315 us
+
+I (37476) latency: detect::preprocess: 8279 us
+
+I (37477) latency: detect::forward: 17549 us
+
+I (37477) latency: detect::postprocess: 320 us
+
+I (37775) latency: detect::preprocess: 8682 us
+
+I (37775) latency: detect::forward: 17111 us
+
+I (37776) latency: detect::postprocess: 324 us
+
+I (38074) latency: detect::preprocess: 8246 us
+
+I (38075) latency: detect::forward: 18041 us
+
+I (38075) latency: detect::postprocess: 319 us
+
+I (38372) latency: detect::preprocess: 8282 us
+
+I (38372) latency: detect::forward: 17604 us
+
+I (38373) latency: detect::postprocess: 322 us
+
+I (38675) latency: detect::preprocess: 8153 us
+
+I (38675) latency: detect::forward: 17923 us
+
+I (38676) latency: detect::postprocess: 316 us
+
+I (38973) latency: detect::preprocess: 8207 us
+
+I (38974) latency: detect::forward: 17618 us
+
+I (38974) latency: detect::postprocess: 320 us
+
+I (39272) latency: detect::preprocess: 8731 us
+
+I (39273) latency: detect::forward: 17160 us
+
+I (39273) latency: detect::postprocess: 320 us
+
+I (39570) latency: detect::preprocess: 8100 us
+
+I (39571) latency: detect::forward: 17836 us
+
+I (39571) latency: detect::postprocess: 321 us
+
+I (39862) latency: detect::preprocess: 8228 us
+
+I (39863) latency: detect::forward: 17569 us
+
+I (39863) latency: detect::postprocess: 325 us
+
+I (40160) latency: detect::preprocess: 8271 us
+
+I (40161) latency: detect::forward: 17519 us
+
+I (40161) latency: detect::postprocess: 326 us
+
+I (40458) latency: detect::preprocess: 8770 us
+
+I (40458) latency: detect::forward: 17041 us
+
+I (40458) latency: detect::postprocess: 320 us
+
+I (40710) latency: detect::preprocess: 8243 us
+
+I (40711) latency: detect::forward: 17906 us
+
+I (40711) latency: detect::postprocess: 313 us
+
+I (40960) latency: detect::preprocess: 8256 us
+
+I (40961) latency: detect::forward: 17965 us
+
+I (40961) latency: detect::postprocess: 317 us
+
+I (41209) latency: detect::preprocess: 8638 us
+
+I (41210) latency: detect::forward: 17168 us
+
+I (41210) latency: detect::postprocess: 327 us
+
+I (41507) latency: detect::preprocess: 8233 us
+
+I (41508) latency: detect::forward: 17622 us
+
+I (41508) latency: detect::postprocess: 325 us
+
+I (41757) latency: detect::preprocess: 8233 us
+
+I (41758) latency: detect::forward: 17554 us
+
+I (41758) latency: detect::postprocess: 325 us
+
+I (42054) latency: detect::preprocess: 8732 us
+
+I (42055) latency: detect::forward: 17140 us
+
+I (42055) latency: detect::postprocess: 327 us
+
+I (42353) latency: detect::preprocess: 8157 us
+
+I (42354) latency: detect::forward: 17795 us
+
+I (42354) latency: detect::postprocess: 320 us
+
+I (42652) latency: detect::preprocess: 8228 us
+
+I (42653) latency: detect::forward: 17596 us
+
+I (42653) latency: detect::postprocess: 321 us
+
+I (42948) latency: detect::preprocess: 8756 us
+
+I (42949) latency: detect::forward: 17229 us
+
+I (42949) latency: detect::postprocess: 322 us
+
+I (43248) latency: detect::preprocess: 8154 us
+
+I (43249) latency: detect::forward: 17965 us
+
+I (43249) latency: detect::postprocess: 322 us
+
+I (43547) latency: detect::preprocess: 8201 us
+
+I (43548) latency: detect::forward: 17617 us
+
+I (43548) latency: detect::postprocess: 327 us
+
+I (43842) latency: detect::preprocess: 8776 us
+
+I (43843) latency: detect::forward: 17163 us
+
+I (43843) latency: detect::postprocess: 325 us
+
+I (44139) latency: detect::preprocess: 8689 us
+
+I (44140) latency: detect::forward: 17696 us
+
+I (44140) latency: detect::postprocess: 320 us
+
+E (44377) esp-tls: couldn't get hostname for :mqtt.xiaozhi.me: getaddrinfo() returns 202, addrinfo=0x0
+E (44378) esp-tls: Failed to open new connection
+E (44380) transport_base: Failed to open a new connection
+E (44385) mqtt_client: Error transport connect
+W (44389) XIAOZHI_VOICE: MQTT error
+I (44392) XIAOZHI_VOICE: MQTT disconnected
+I (44440) latency: detect::preprocess: 8212 us
+
+I (44441) latency: detect::forward: 17887 us
+
+I (44441) latency: detect::postprocess: 326 us
+
+I (44686) latency: detect::preprocess: 8258 us
+
+I (44687) latency: detect::forward: 17579 us
+
+I (44687) latency: detect::postprocess: 321 us
+
+I (44935) latency: detect::preprocess: 8645 us
+
+I (44936) latency: detect::forward: 17158 us
+
+I (44937) latency: detect::postprocess: 364 us
+
+I (45188) latency: detect::preprocess: 8180 us
+
+I (45188) latency: detect::forward: 18208 us
+
+I (45188) latency: detect::postprocess: 316 us
+
+I (45487) latency: detect::preprocess: 8762 us
+
+I (45488) latency: detect::forward: 17193 us
+
+I (45488) latency: detect::postprocess: 331 us
+
+I (45787) latency: detect::preprocess: 8147 us
+
+I (45788) latency: detect::forward: 17831 us
+
+I (45788) latency: detect::postprocess: 321 us
+
+I (46084) latency: detect::preprocess: 8201 us
+
+I (46085) latency: detect::forward: 18088 us
+
+I (46085) latency: detect::postprocess: 332 us
+
+I (46382) latency: detect::preprocess: 8741 us
+
+I (46383) latency: detect::forward: 17117 us
+
+I (46383) latency: detect::postprocess: 339 us
+
+I (46633) latency: detect::preprocess: 8170 us
+
+I (46634) latency: detect::forward: 17726 us
+
+I (46634) latency: detect::postprocess: 315 us
+
+I (46931) latency: detect::preprocess: 8196 us
+
+I (46931) latency: detect::forward: 18050 us
+
+I (46932) latency: detect::postprocess: 323 us
+
+I (47227) latency: detect::preprocess: 8230 us
+
+I (47228) latency: detect::forward: 17726 us
+
+I (47228) latency: detect::postprocess: 328 us
+
+I (47526) latency: detect::preprocess: 8668 us
+
+I (47526) latency: detect::forward: 17678 us
+
+I (47526) latency: detect::postprocess: 327 us
+
+I (47821) latency: detect::preprocess: 8147 us
+
+I (47822) latency: detect::forward: 17789 us
+
+I (47822) latency: detect::postprocess: 315 us
+
+I (48122) latency: detect::preprocess: 8233 us
+
+I (48123) latency: detect::forward: 17773 us
+
+I (48123) latency: detect::postprocess: 328 us
+
+I (48421) latency: detect::preprocess: 8676 us
+
+I (48421) latency: detect::forward: 17777 us
+
+I (48422) latency: detect::postprocess: 327 us
+
+I (48716) latency: detect::preprocess: 8172 us
+
+I (48717) latency: detect::forward: 17828 us
+
+I (48717) latency: detect::postprocess: 312 us
+
+I (49017) latency: detect::preprocess: 8221 us
+
+I (49018) latency: detect::forward: 17647 us
+
+I (49018) latency: detect::postprocess: 326 us
+
+I (49315) latency: detect::preprocess: 8709 us
+
+I (49316) latency: detect::forward: 17579 us
+
+I (49316) latency: detect::postprocess: 598 us
+
+I (49443) XIAOZHI_VOICE: MQTT connecting to mqtts://mqtt.xiaozhi.me:8883 as GID_test@@@b4_3a_45_99_bf_3c@@@96ac2b5b-4d69-446e-9148-65afac8add81
+I (49620) latency: detect::preprocess: 8266 us
+
+I (49621) latency: detect::forward: 17537 us
+
+I (49621) latency: detect::postprocess: 327 us
+
+I (49876) latency: detect::preprocess: 8156 us
+
+I (49877) latency: detect::forward: 17841 us
+
+I (49877) latency: detect::postprocess: 326 us
+
+I (50059) esp-x509-crt-bundle: Certificate validated
+I (50148) latency: detect::preprocess: 8402 us
+
+I (50148) latency: detect::forward: 18783 us
+
+I (50148) latency: detect::postprocess: 317 us
+
+I (50415) latency: detect::preprocess: 8628 us
+
+I (50416) latency: detect::forward: 18051 us
+
+I (50416) latency: detect::postprocess: 326 us
+
+I (50666) latency: detect::preprocess: 8723 us
+
+I (50667) latency: detect::forward: 17091 us
+
+I (50667) latency: detect::postprocess: 318 us
+
+I (50970) latency: detect::preprocess: 8202 us
+
+I (50971) latency: detect::forward: 18159 us
+
+I (50971) latency: detect::postprocess: 327 us
+
+I (51213) XIAOZHI_VOICE: MQTT connected
+I (51218) XIAOZHI_VOICE: MCP initialize responded
+I (51278) latency: detect::preprocess: 8288 us
+
+I (51279) latency: detect::forward: 17860 us
+
+I (51279) latency: detect::postprocess: 315 us
+
+E (51300) mqtt_client: esp_mqtt_handle_transport_read_error: transport_read(): EOF
+E (51301) mqtt_client: esp_mqtt_handle_transport_read_error: transport_read() error: errno=119
+W (51306) XIAOZHI_VOICE: MQTT error
+E (51309) mqtt_client: mqtt_process_receive: mqtt_message_receive() returned -2
+I (51320) XIAOZHI_VOICE: MQTT disconnected
+I (51580) latency: detect::preprocess: 8225 us
+
+I (51580) latency: detect::forward: 17550 us
+
+I (51580) latency: detect::postprocess: 319 us
+
+I (51877) latency: detect::preprocess: 8683 us
+
+I (51877) latency: detect::forward: 17144 us
+
+I (51878) latency: detect::postprocess: 320 us
+
+I (52175) latency: detect::preprocess: 8152 us
+
+I (52176) latency: detect::forward: 17584 us
+
+I (52176) latency: detect::postprocess: 325 us
+
+I (52477) latency: detect::preprocess: 8784 us
+
+I (52478) latency: detect::forward: 17141 us
+
+I (52478) latency: detect::postprocess: 325 us
+
+I (52777) latency: detect::preprocess: 8098 us
+
+I (52778) latency: detect::forward: 17593 us
+
+I (52778) latency: detect::postprocess: 320 us
+
+I (53076) latency: detect::preprocess: 8222 us
+
+I (53077) latency: detect::forward: 17940 us
+
+I (53077) latency: detect::postprocess: 325 us
+
+I (53373) latency: detect::preprocess: 8770 us
+
+I (53374) latency: detect::forward: 17052 us
+
+I (53374) latency: detect::postprocess: 327 us
+
+I (53673) latency: detect::preprocess: 8167 us
+
+I (53674) latency: detect::forward: 17711 us
+
+I (53674) latency: detect::postprocess: 317 us
+
+I (53976) latency: detect::preprocess: 8324 us
+
+I (53977) latency: detect::forward: 17620 us
+
+I (53977) latency: detect::postprocess: 324 us
+
+I (54277) latency: detect::preprocess: 8143 us
+
+I (54277) latency: detect::forward: 17669 us
+
+I (54278) latency: detect::postprocess: 312 us
+
+I (54576) latency: detect::preprocess: 8193 us
+
+I (54576) latency: detect::forward: 18050 us
+
+I (54577) latency: detect::postprocess: 317 us
+
+I (54877) latency: detect::preprocess: 8638 us
+
+I (54877) latency: detect::forward: 17213 us
+
+I (54878) latency: detect::postprocess: 319 us
+
+I (55175) latency: detect::preprocess: 8166 us
+
+I (55175) latency: detect::forward: 17665 us
+
+I (55176) latency: detect::postprocess: 317 us
+
+I (55472) latency: detect::preprocess: 8266 us
+
+I (55473) latency: detect::forward: 17675 us
+
+I (55473) latency: detect::postprocess: 322 us
+
+I (55775) latency: detect::preprocess: 8695 us
+
+I (55775) latency: detect::forward: 17702 us
+
+I (55776) latency: detect::postprocess: 320 us
+
+I (56071) latency: detect::preprocess: 8169 us
+
+I (56071) latency: detect::forward: 17832 us
+
+I (56071) latency: detect::postprocess: 316 us
+
+I (56364) latency: detect::preprocess: 8247 us
+
+I (56364) latency: detect::forward: 18087 us
+
+I (56365) latency: detect::postprocess: 316 us
+
+I (56615) latency: detect::preprocess: 8754 us
+
+I (56616) latency: detect::forward: 17174 us
+
+I (56616) latency: detect::postprocess: 333 us
+
+I (56912) latency: detect::preprocess: 8627 us
+
+I (56912) latency: detect::forward: 17785 us
+
+I (56912) latency: detect::postprocess: 318 us
+
+I (57212) latency: detect::preprocess: 8190 us
+
+I (57213) latency: detect::forward: 18161 us
+
+I (57213) latency: detect::postprocess: 319 us
+
+I (57463) latency: detect::preprocess: 8755 us
+
+I (57463) latency: detect::forward: 17230 us
+
+I (57463) latency: detect::postprocess: 369 us
+
+I (57763) latency: detect::preprocess: 8169 us
+
+I (57763) latency: detect::forward: 17964 us
+
+I (57763) latency: detect::postprocess: 313 us
+
+I (58062) latency: detect::preprocess: 8284 us
+
+I (58062) latency: detect::forward: 17442 us
+
+I (58063) latency: detect::postprocess: 323 us
+
+I (58360) latency: detect::preprocess: 8697 us
+
+I (58361) latency: detect::forward: 17056 us
+
+I (58361) latency: detect::postprocess: 324 us
+
+I (58657) latency: detect::preprocess: 8166 us
+
+I (58658) latency: detect::forward: 17789 us
+
+I (58658) latency: detect::postprocess: 312 us
+
+I (58955) latency: detect::preprocess: 8201 us
+
+I (58955) latency: detect::forward: 18187 us
+
+I (58956) latency: detect::postprocess: 318 us
+
+I (59251) latency: detect::preprocess: 8757 us
+
+I (59252) latency: detect::forward: 17142 us
+
+I (59252) latency: detect::postprocess: 323 us
+
+I (59550) latency: detect::preprocess: 8585 us
+
+I (59550) latency: detect::forward: 18011 us
+
+I (59551) latency: detect::postprocess: 318 us
+
+I (59802) latency: detect::preprocess: 8242 us
+
+I (59802) latency: detect::forward: 17504 us
+
+I (59803) latency: detect::postprocess: 322 us
+
+I (60051) latency: detect::preprocess: 8758 us
+
+I (60052) latency: detect::forward: 17108 us
+
+I (60052) latency: detect::postprocess: 319 us
+
+I (60350) latency: detect::preprocess: 8170 us
+
+I (60351) latency: detect::forward: 17987 us
+
+I (60351) latency: detect::postprocess: 316 us
+
+I (60648) latency: detect::preprocess: 8249 us
+
+I (60649) latency: detect::forward: 17572 us
+
+I (60649) latency: detect::postprocess: 319 us

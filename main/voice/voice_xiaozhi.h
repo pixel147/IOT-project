@@ -6,9 +6,9 @@
 extern "C" {
 #endif
 
-/** Register this device via HTTP OTA to obtain real WebSocket credentials.
- *  Should be called once after WiFi connects, before voice_xiaozhi_start().
- *  The server matches by MAC/UUID and saves url/token into NVS "websocket". */
+/** Register this device via HTTP OTA to obtain MQTT credentials.
+ *  Called once by voice_xiaozhi_start(). Saves endpoint/client_id/username/password
+ *  into NVS "mqtt" namespace for subsequent MQTT+UDP voice sessions. */
 esp_err_t xiaozhi_ota_register(void);
 
 /* Starts the upstream XiaoZhi-compatible wake-word, audio and WebSocket path.

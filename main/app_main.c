@@ -461,8 +461,7 @@ void app_main(void)
     }
     lvgl_port_unlock();
 
-    /* Start XiaoZhi voice module unconditionally - mic and WakeNet init don't need WiFi.
-     * The voice task will connect WebSocket when the wake word triggers. */
+    /* Initialise XiaoZhi audio once; the chat music button starts each manual voice turn. */
     {
         esp_err_t voice_ret = voice_xiaozhi_start();
         if (voice_ret != ESP_OK) {
